@@ -310,8 +310,16 @@ mod tests {
 
         // Truncate from index 2 and append new entries
         let new_entries = vec![
-            LogEntry { term: 2, index: 2, command: Command::Noop },
-            LogEntry { term: 2, index: 3, command: Command::Noop },
+            LogEntry {
+                term: 2,
+                index: 2,
+                command: Command::Noop,
+            },
+            LogEntry {
+                term: 2,
+                index: 3,
+                command: Command::Noop,
+            },
         ];
         state.truncate_and_append(2, new_entries);
 

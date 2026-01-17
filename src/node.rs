@@ -24,7 +24,10 @@ impl Node {
     pub fn new(
         config: NodeConfig,
         dashboard_addr: Option<SocketAddr>,
-    ) -> (Self, tokio::sync::mpsc::Receiver<crate::raft::node::RaftMessage>) {
+    ) -> (
+        Self,
+        tokio::sync::mpsc::Receiver<crate::raft::node::RaftMessage>,
+    ) {
         let (raft_node, raft_rx) = RaftNode::new(config.clone());
 
         let node = Self {

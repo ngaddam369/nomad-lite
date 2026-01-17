@@ -62,7 +62,11 @@ impl JobExecutor {
                 ExecutionResult {
                     job_id,
                     status,
-                    output: if stdout.is_empty() { None } else { Some(stdout) },
+                    output: if stdout.is_empty() {
+                        None
+                    } else {
+                        Some(stdout)
+                    },
                     error,
                 }
             }

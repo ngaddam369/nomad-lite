@@ -43,7 +43,9 @@ impl SchedulerService for ClientService {
                 accepted: false,
                 error: format!(
                     "Not the leader. Current leader: {}",
-                    leader.map(|l| l.to_string()).unwrap_or_else(|| "unknown".to_string())
+                    leader
+                        .map(|l| l.to_string())
+                        .unwrap_or_else(|| "unknown".to_string())
                 ),
             }));
         }
@@ -107,8 +109,8 @@ impl SchedulerService for ClientService {
     ) -> Result<Response<GetJobStatusResponse>, Status> {
         let req = request.into_inner();
 
-        let job_id = Uuid::parse_str(&req.job_id)
-            .map_err(|_| Status::invalid_argument("Invalid job ID"))?;
+        let job_id =
+            Uuid::parse_str(&req.job_id).map_err(|_| Status::invalid_argument("Invalid job ID"))?;
 
         let queue = self.job_queue.read().await;
         match queue.get_job(&job_id) {

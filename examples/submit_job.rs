@@ -45,7 +45,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match args.command {
         Commands::Submit { cmd } => {
             let response = client
-                .submit_job(SubmitJobRequest { command: cmd.clone() })
+                .submit_job(SubmitJobRequest {
+                    command: cmd.clone(),
+                })
                 .await?
                 .into_inner();
 
@@ -63,7 +65,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .into_inner();
 
             println!("Job ID: {}", response.job_id);
-            println!("Status: {:?}", nomad_lite::proto::JobStatus::try_from(response.status).unwrap_or(nomad_lite::proto::JobStatus::Unspecified));
+            println!(
+                "Status: {:?}",
+                nomad_lite::proto::JobStatus::try_from(response.status)
+                    .unwrap_or(nomad_lite::proto::JobStatus::Unspecified)
+            );
             if !response.output.is_empty() {
                 println!("Output: {}", response.output);
             }
@@ -80,7 +86,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if response.jobs.is_empty() {
                 println!("No jobs found.");
             } else {
-                println!("{:<40} {:<15} {:<10} {}", "JOB ID", "STATUS", "WORKER", "COMMAND");
+                println!(
+                    "{:<40} {:<15} {:<10} {}",
+                    "JOB ID", "STATUS", "WORKER", "COMMAND"
+                );
                 println!("{}", "-".repeat(80));
                 for job in response.jobs {
                     let status = nomad_lite::proto::JobStatus::try_from(job.status)

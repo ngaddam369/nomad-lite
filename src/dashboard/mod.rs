@@ -79,9 +79,7 @@ async fn index_handler() -> Html<&'static str> {
     Html(include_str!("index.html"))
 }
 
-async fn cluster_status_handler(
-    State(state): State<DashboardState>,
-) -> impl IntoResponse {
+async fn cluster_status_handler(State(state): State<DashboardState>) -> impl IntoResponse {
     let raft_state = state.raft_node.state.read().await;
 
     Json(ClusterStatusResponse {
@@ -99,9 +97,7 @@ async fn cluster_status_handler(
     })
 }
 
-async fn list_jobs_handler(
-    State(state): State<DashboardState>,
-) -> impl IntoResponse {
+async fn list_jobs_handler(State(state): State<DashboardState>) -> impl IntoResponse {
     let queue = state.job_queue.read().await;
     let jobs: Vec<JobResponse> = queue
         .all_jobs()

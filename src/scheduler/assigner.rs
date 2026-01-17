@@ -79,14 +79,12 @@ impl JobAssigner {
         }
 
         // Find least loaded worker
-        let worker_id = available
-            .into_iter()
-            .min_by_key(|&id| {
-                self.workers
-                    .get(&id)
-                    .map(|w| w.running_jobs.len())
-                    .unwrap_or(usize::MAX)
-            })?;
+        let worker_id = available.into_iter().min_by_key(|&id| {
+            self.workers
+                .get(&id)
+                .map(|w| w.running_jobs.len())
+                .unwrap_or(usize::MAX)
+        })?;
 
         // Find a pending job
         let pending = queue.pending_jobs();

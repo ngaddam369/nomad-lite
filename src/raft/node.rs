@@ -80,8 +80,10 @@ impl RaftNode {
 
     /// Run the Raft node main loop
     pub async fn run(&self, mut message_rx: mpsc::Receiver<RaftMessage>) {
-        let mut election_timeout =
-            random_election_timeout(self.config.election_timeout_min_ms, self.config.election_timeout_max_ms);
+        let mut election_timeout = random_election_timeout(
+            self.config.election_timeout_min_ms,
+            self.config.election_timeout_max_ms,
+        );
 
         loop {
             let role = self.state.read().await.role;
@@ -143,11 +145,7 @@ impl RaftNode {
         let majority = (total_nodes / 2) + 1;
         drop(state);
 
-        tracing::info!(
-            node_id = self.id,
-            term,
-            "Starting election"
-        );
+        tracing::info!(node_id = self.id, term, "Starting election");
 
         // Request votes from all peers
         let req = VoteRequest {
@@ -197,12 +195,7 @@ impl RaftNode {
             if vote_count >= majority as u64 {
                 let peer_ids: Vec<u64> = self.config.peers.iter().map(|p| p.node_id).collect();
                 state.become_leader(self.id, &peer_ids);
-                tracing::info!(
-                    node_id = self.id,
-                    term,
-                    votes = vote_count,
-                    "Became leader"
-                );
+                tracing::info!(node_id = self.id, term, votes = vote_count, "Became leader");
             } else {
                 tracing::debug!(
                     node_id = self.id,
@@ -323,10 +316,7 @@ impl RaftNode {
         let mut state = self.state.write().await;
 
         if state.role != RaftRole::Leader {
-            return Err(format!(
-                "Not leader. Current leader: {:?}",
-                state.leader_id
-            ));
+            return Err(format!("Not leader. Current leader: {:?}", state.leader_id));
         }
 
         let entry = state.append_entry(command);
