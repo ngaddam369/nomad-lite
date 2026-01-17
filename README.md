@@ -1,4 +1,4 @@
-# Nomad-Lite
+# Nomad-Lite ![CI](https://github.com/ngaddam369/nomad-lite/actions/workflows/ci.yml/badge.svg)
 
 A distributed job scheduler built in Rust with custom Raft consensus implementation.
 

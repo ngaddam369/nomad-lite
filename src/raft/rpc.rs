@@ -95,11 +95,8 @@ pub fn handle_append_entries(
 
     // Append new entries (if any)
     if !req.entries.is_empty() {
-        let new_entries: Vec<LogEntry> = req
-            .entries
-            .iter()
-            .filter_map(proto_to_log_entry)
-            .collect();
+        let new_entries: Vec<LogEntry> =
+            req.entries.iter().filter_map(proto_to_log_entry).collect();
 
         let start_index = req.prev_log_index + 1;
         state.truncate_and_append(start_index, new_entries);
