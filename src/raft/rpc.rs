@@ -98,7 +98,7 @@ pub fn handle_append_entries(
         let new_entries: Vec<LogEntry> = req
             .entries
             .iter()
-            .filter_map(|e| proto_to_log_entry(e))
+            .filter_map(proto_to_log_entry)
             .collect();
 
         let start_index = req.prev_log_index + 1;

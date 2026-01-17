@@ -160,7 +160,7 @@ impl RaftNode {
 
         for (peer_id, client) in peers.iter() {
             let mut client = client.clone();
-            match timeout(Duration::from_millis(100), client.request_vote(req.clone())).await {
+            match timeout(Duration::from_millis(100), client.request_vote(req)).await {
                 Ok(Ok(response)) => {
                     let resp = response.into_inner();
                     if resp.term > term {
@@ -239,7 +239,7 @@ impl RaftNode {
             let entries: Vec<_> = log_snapshot
                 .iter()
                 .filter(|e| e.index >= peer_next_index)
-                .map(|e| log_entry_to_proto(e))
+                .map(log_entry_to_proto)
                 .collect();
 
             let req = AppendEntriesRequest {
