@@ -65,7 +65,9 @@ async fn test_execute_command_with_stderr() {
     let job_id = Uuid::new_v4();
 
     // Command that writes to stderr and fails
-    let result = executor.execute(job_id, "echo 'error message' >&2 && exit 1").await;
+    let result = executor
+        .execute(job_id, "echo 'error message' >&2 && exit 1")
+        .await;
 
     assert_eq!(result.job_id, job_id);
     assert_eq!(result.status, JobStatus::Failed);
@@ -79,9 +81,7 @@ async fn test_execute_invalid_command() {
     let job_id = Uuid::new_v4();
 
     // Command that doesn't exist
-    let result = executor
-        .execute(job_id, "nonexistent_command_12345")
-        .await;
+    let result = executor.execute(job_id, "nonexistent_command_12345").await;
 
     assert_eq!(result.job_id, job_id);
     assert_eq!(result.status, JobStatus::Failed);
@@ -93,7 +93,9 @@ async fn test_execute_multiline_output() {
     let executor = JobExecutor::new();
     let job_id = Uuid::new_v4();
 
-    let result = executor.execute(job_id, "echo -e 'line1\\nline2\\nline3'").await;
+    let result = executor
+        .execute(job_id, "echo -e 'line1\\nline2\\nline3'")
+        .await;
 
     assert_eq!(result.job_id, job_id);
     assert_eq!(result.status, JobStatus::Completed);
