@@ -47,7 +47,39 @@ pub struct LogEntry {
     pub command: Command,
 }
 
-/// Persistent state on all servers (would be persisted to disk in production)
+/// Persistent state on all servers (would be persisted to disk in production).
+///
+/// # Raft Safety Invariants
+///
+/// This implementation maintains the following safety guarantees:
+///
+/// ## Election Safety
+/// At most one leader can be elected in a given term. Enforced by:
+/// - Each node votes for at most one candidate per term (`voted_for`)
+/// - Candidate must receive majority of votes to become leader
+///
+/// ## Leader Append-Only
+/// A leader never overwrites or deletes entries in its log. Enforced by:
+/// - Leaders only append new entries via `append_entry()`
+/// - Log truncation only occurs on followers during replication conflicts
+///
+/// ## Log Matching
+/// If two logs contain an entry with the same index and term, then the logs
+/// are identical in all entries up through that index. Enforced by:
+/// - `AppendEntries` consistency check (prev_log_index, prev_log_term)
+/// - Conflicting entries are truncated before appending
+///
+/// ## Leader Completeness
+/// If a log entry is committed in a given term, that entry will be present
+/// in the logs of all leaders for higher terms. Enforced by:
+/// - Vote restriction: candidates must have up-to-date logs (`is_log_up_to_date`)
+/// - Leaders only commit entries from their current term
+///
+/// ## State Machine Safety
+/// If a server has applied a log entry at a given index, no other server will
+/// ever apply a different entry for that index. Enforced by:
+/// - Entries are only applied after being committed (`last_applied <= commit_index`)
+/// - Committed entries are never overwritten (Leader Completeness)
 #[derive(Debug)]
 pub struct RaftState {
     // Persistent state

@@ -42,7 +42,20 @@ impl Node {
         (node, raft_rx)
     }
 
-    /// Run the node (all components)
+    /// Run the node with all components.
+    ///
+    /// This is the main entry point that starts all node subsystems:
+    /// 1. Connects to peer nodes for Raft communication
+    /// 2. Spawns the Raft consensus loop (leader election, log replication)
+    /// 3. Spawns the scheduler loop (applies committed entries, assigns jobs)
+    /// 4. Spawns the worker loop (executes assigned jobs)
+    /// 5. Optionally spawns the web dashboard server
+    /// 6. Runs the gRPC server (blocking)
+    ///
+    /// # Note
+    ///
+    /// This method blocks on the gRPC server. All other components run as
+    /// spawned tasks. If the gRPC server fails, the node will stop.
     pub async fn run(self, raft_rx: tokio::sync::mpsc::Receiver<crate::raft::node::RaftMessage>) {
         // Connect to peers
         self.raft_node.connect_to_peers().await;
@@ -92,7 +105,24 @@ impl Node {
         }
     }
 
-    /// Scheduler loop: applies committed entries and assigns jobs to workers
+    /// Scheduler loop that maintains consistent state and assigns jobs.
+    ///
+    /// This loop runs on all nodes and performs two key functions:
+    ///
+    /// ## 1. Apply Committed Entries (all nodes)
+    /// Polls Raft for newly committed log entries and applies them to local state:
+    /// - `SubmitJob`: Adds job to queue if not already present (idempotent)
+    /// - `UpdateJobStatus`: Updates job status, output, and error
+    /// - `RegisterWorker`: Registers worker with the job assigner
+    ///
+    /// This ensures all nodes maintain identical job queue state.
+    ///
+    /// ## 2. Assign Jobs (leader only)
+    /// The leader assigns pending jobs to available workers using
+    /// least-loaded scheduling. Followers skip this step.
+    ///
+    /// # Polling Interval
+    /// Runs every 100ms. See TODO for event-driven improvements.
     async fn scheduler_loop(
         raft_node: Arc<RaftNode>,
         job_queue: Arc<RwLock<JobQueue>>,
@@ -144,7 +174,19 @@ impl Node {
         }
     }
 
-    /// Worker loop: executes jobs assigned to this node
+    /// Worker loop that executes jobs assigned to this node.
+    ///
+    /// Each node acts as both a potential leader and a worker. This loop:
+    ///
+    /// 1. **Registers** this node as a worker on startup
+    /// 2. **Sends heartbeats** every 500ms to stay registered
+    /// 3. **Polls for assigned jobs** that are in `Running` status
+    /// 4. **Executes jobs** via shell and captures output
+    /// 5. **Updates local state** with job results
+    /// 6. **Replicates status** through Raft (leader only)
+    ///
+    /// # Polling Interval
+    /// Runs every 500ms. See TODO for event-driven improvements.
     async fn worker_loop(
         node_id: u64,
         raft_node: Arc<RaftNode>,

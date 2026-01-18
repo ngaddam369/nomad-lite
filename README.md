@@ -1,6 +1,7 @@
-# Nomad-Lite ![CI](https://github.com/ngaddam369/nomad-lite/actions/workflows/ci.yml/badge.svg)
+# nomad-lite ![CI](https://github.com/ngaddam369/nomad-lite/actions/workflows/ci.yml/badge.svg)
 
-A distributed job scheduler built in Rust with custom Raft consensus implementation.
+This project implements a distributed job scheduler similar to Nomad, Kubernetes scheduler, or Apache Airflow.
+The Jobs are simple shell commands like `echo hello`, `sleep 5` etc.
 
 ## Features
 
@@ -319,6 +320,6 @@ nomad-lite/
 
 ### Medium Priority (Documentation)
 
-- [ ] **Missing module docs** - Add doc comments to `src/raft/mod.rs`, `src/scheduler/mod.rs`, `src/worker/mod.rs`.
-- [ ] **Missing function docs** - Document `scheduler_loop()`, `run()`, and public APIs.
-- [ ] **No invariants documented** - Document Raft safety invariants as comments.
+- [x] **Missing module docs** - Add doc comments to `src/raft/mod.rs`, `src/scheduler/mod.rs`, `src/worker/mod.rs`.
+- [x] **Missing function docs** - Document `scheduler_loop()`, `run()`, and public APIs.
+- [x] **No invariants documented** - Document Raft safety invariants as comments.
