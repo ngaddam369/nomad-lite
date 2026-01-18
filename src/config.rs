@@ -20,7 +20,10 @@ impl Default for NodeConfig {
     fn default() -> Self {
         Self {
             node_id: 1,
-            listen_addr: "127.0.0.1:50051".parse().unwrap(),
+            // SAFETY: This is a hardcoded valid address that will always parse
+            listen_addr: "127.0.0.1:50051"
+                .parse()
+                .expect("default listen address is valid"),
             peers: Vec::new(),
             election_timeout_min_ms: 150,
             election_timeout_max_ms: 300,

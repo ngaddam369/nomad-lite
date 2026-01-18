@@ -71,8 +71,17 @@ pub async fn run_dashboard(addr: SocketAddr, state: DashboardState) {
 
     tracing::info!(addr = %addr, "Starting dashboard server");
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(listener) => listener,
+        Err(e) => {
+            tracing::error!(addr = %addr, error = %e, "Failed to bind dashboard server");
+            return;
+        }
+    };
+
+    if let Err(e) = axum::serve(listener, app).await {
+        tracing::error!(error = %e, "Dashboard server failed");
+    }
 }
 
 async fn index_handler() -> Html<&'static str> {

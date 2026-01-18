@@ -52,11 +52,14 @@ impl Node {
     /// 5. Optionally spawns the web dashboard server
     /// 6. Runs the gRPC server (blocking)
     ///
-    /// # Note
+    /// # Errors
     ///
-    /// This method blocks on the gRPC server. All other components run as
-    /// spawned tasks. If the gRPC server fails, the node will stop.
-    pub async fn run(self, raft_rx: tokio::sync::mpsc::Receiver<crate::raft::node::RaftMessage>) {
+    /// Returns an error if the gRPC server fails to start or encounters a fatal error.
+    /// Other components run as spawned tasks and log their own errors.
+    pub async fn run(
+        self,
+        raft_rx: tokio::sync::mpsc::Receiver<crate::raft::node::RaftMessage>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // Connect to peers
         self.raft_node.connect_to_peers().await;
 
@@ -101,9 +104,8 @@ impl Node {
             self.raft_node.clone(),
             self.job_queue.clone(),
         );
-        if let Err(e) = server.run().await {
-            tracing::error!(error = %e, "gRPC server failed");
-        }
+        server.run().await?;
+        Ok(())
     }
 
     /// Scheduler loop that maintains consistent state and assigns jobs.
@@ -262,13 +264,20 @@ impl Node {
                         error: None,
                     };
                     let (tx, _rx) = tokio::sync::oneshot::channel();
-                    let _ = raft_node
+                    if let Err(e) = raft_node
                         .message_sender()
                         .send(crate::raft::node::RaftMessage::AppendCommand {
                             command,
                             response_tx: tx,
                         })
-                        .await;
+                        .await
+                    {
+                        tracing::warn!(
+                            job_id = %job_id,
+                            error = %e,
+                            "Failed to send job status update to Raft"
+                        );
+                    }
                 }
             }
         }

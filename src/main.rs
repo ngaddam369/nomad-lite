@@ -62,9 +62,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     let listen_addr: SocketAddr = format!("0.0.0.0:{}", args.port).parse()?;
-    let dashboard_addr: Option<SocketAddr> = args
-        .dashboard_port
-        .map(|p| format!("0.0.0.0:{}", p).parse().unwrap());
+    let dashboard_addr: Option<SocketAddr> = match args.dashboard_port {
+        Some(p) => Some(format!("0.0.0.0:{}", p).parse()?),
+        None => None,
+    };
     let peers = parse_peers(&args.peers);
 
     let config = NodeConfig {
@@ -85,7 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let (node, raft_rx) = Node::new(config, dashboard_addr);
-    node.run(raft_rx).await;
+    node.run(raft_rx).await?;
 
     Ok(())
 }

@@ -284,11 +284,11 @@ nomad-lite/
 
 ### High Priority (Error Handling)
 
-- [ ] **Unwrap in config** - `src/config.rs:23` uses `parse().unwrap()` in Default impl.
-- [ ] **Unwrap in main** - `src/main.rs:67` uses `parse().unwrap()` on dashboard_addr.
-- [ ] **Unwrap in dashboard** - `src/dashboard/mod.rs:74-75` uses `unwrap()` on server bind.
-- [ ] **Silent gRPC failures** - `src/node.rs:88-92` logs errors but node silently stops.
-- [ ] **Ignored send errors** - `src/raft/node.rs:222-228` silently ignores channel send failures.
+- [x] **Unwrap in config** - `src/config.rs:23` uses `parse().unwrap()` in Default impl.
+- [x] **Unwrap in main** - `src/main.rs:67` uses `parse().unwrap()` on dashboard_addr.
+- [x] **Unwrap in dashboard** - `src/dashboard/mod.rs:74-75` uses `unwrap()` on server bind.
+- [x] **Silent gRPC failures** - `src/node.rs:88-92` logs errors but node silently stops.
+- [x] **Ignored send errors** - `src/raft/node.rs:222-228` silently ignores channel send failures.
 
 ### High Priority (Testing)
 
