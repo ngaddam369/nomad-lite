@@ -91,9 +91,8 @@ message SubmitJobRequest {
 }
 
 message SubmitJobResponse {
+    // Job ID assigned to the submitted job
     string job_id = 1;
-    bool accepted = 2;
-    string error = 3;
 }
 
 message GetJobStatusRequest {
@@ -108,10 +107,19 @@ message GetJobStatusResponse {
     uint64 assigned_worker = 5;
 }
 
-message ListJobsRequest {}
+message ListJobsRequest {
+    // Maximum number of jobs to return (default: 100, max: 1000)
+    uint32 page_size = 1;
+    // Page token from previous response for pagination
+    string page_token = 2;
+}
 
 message ListJobsResponse {
     repeated JobInfo jobs = 1;
+    // Token to retrieve the next page of results (empty if no more pages)
+    string next_page_token = 2;
+    // Total number of jobs in the queue
+    uint32 total_count = 3;
 }
 
 message JobInfo {

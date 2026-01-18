@@ -314,9 +314,9 @@ nomad-lite/
 
 ### Medium Priority (API Design)
 
-- [ ] **Error in response fields** - `src/grpc/client_service.rs:41-50` uses response fields for errors instead of gRPC status codes.
-- [ ] **No pagination** - `ListJobs` returns all jobs without pagination.
-- [ ] **Incomplete cluster status** - `GetClusterStatusResponse` only returns current node info.
+- [x] **Error in response fields** - `src/grpc/client_service.rs:41-50` uses response fields for errors instead of gRPC status codes.
+- [x] **No pagination** - `ListJobs` returns all jobs without pagination.
+- [x] **Incomplete cluster status** - `GetClusterStatusResponse` only returns current node info.
 
 ### Medium Priority (Documentation)
 

@@ -44,18 +44,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match args.command {
         Commands::Submit { cmd } => {
-            let response = client
+            match client
                 .submit_job(SubmitJobRequest {
                     command: cmd.clone(),
                 })
-                .await?
-                .into_inner();
-
-            if response.accepted {
-                println!("Job submitted successfully!");
-                println!("Job ID: {}", response.job_id);
-            } else {
-                println!("Job submission failed: {}", response.error);
+                .await
+            {
+                Ok(response) => {
+                    let resp = response.into_inner();
+                    println!("Job submitted successfully!");
+                    println!("Job ID: {}", resp.job_id);
+                }
+                Err(status) => {
+                    println!("Job submission failed: {}", status.message());
+                }
             }
         }
         Commands::Status { job_id } => {
@@ -81,11 +83,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::List => {
-            let response = client.list_jobs(ListJobsRequest {}).await?.into_inner();
+            let response = client
+                .list_jobs(ListJobsRequest {
+                    page_size: 100,
+                    page_token: String::new(),
+                })
+                .await?
+                .into_inner();
 
             if response.jobs.is_empty() {
                 println!("No jobs found.");
             } else {
+                println!("Total jobs: {}", response.total_count);
+                println!();
                 println!(
                     "{:<40} {:<15} {:<10} {}",
                     "JOB ID", "STATUS", "WORKER", "COMMAND"
@@ -106,6 +116,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         job.command
                     );
                 }
+                if !response.next_page_token.is_empty() {
+                    println!();
+                    println!("(More results available)");
+                }
             }
         }
         Commands::Cluster => {
@@ -115,9 +129,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .into_inner();
 
             println!("Cluster Status:");
-            println!("  Node ID: {}", response.node_id);
+            println!("  Current Node: {}", response.node_id);
             println!("  Role: {}", response.role);
-            println!("  Current Term: {}", response.current_term);
+            println!("  Term: {}", response.current_term);
             println!(
                 "  Leader: {}",
                 response
@@ -125,6 +139,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .map(|l| l.to_string())
                     .unwrap_or_else(|| "unknown".to_string())
             );
+            println!();
+            println!("Nodes:");
+            for node in response.nodes {
+                println!(
+                    "  Node {}: {} ({})",
+                    node.node_id,
+                    node.address,
+                    if node.is_alive { "alive" } else { "dead" }
+                );
+            }
         }
     }
 

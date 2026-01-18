@@ -97,6 +97,7 @@ impl Node {
         // Run gRPC server (blocks)
         let server = GrpcServer::new(
             self.config.listen_addr,
+            self.config.clone(),
             self.raft_node.clone(),
             self.job_queue.clone(),
         );
