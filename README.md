@@ -101,10 +101,15 @@ cargo run -- --node-id 3 --port 50053 --dashboard-port 8083 \
 # Start a 3-node cluster
 docker-compose up --build
 
-# Dashboards available at:
+# Dashboards:
 # - http://localhost:8081 (Node 1)
 # - http://localhost:8082 (Node 2)
 # - http://localhost:8083 (Node 3)
+
+# gRPC endpoints:
+# - localhost:50051 (Node 1)
+# - localhost:50052 (Node 2)
+# - localhost:50053 (Node 3)
 ```
 
 ## CLI Client
@@ -231,13 +236,15 @@ nomad-lite/
 ├── proto/scheduler.proto       # gRPC definitions
 ├── src/
 │   ├── main.rs                 # Entry point
+│   ├── lib.rs                  # Library exports
 │   ├── config.rs               # Configuration
+│   ├── error.rs                # Error types
 │   ├── node.rs                 # Main orchestration
 │   ├── raft/
 │   │   ├── state.rs            # Raft state & log
 │   │   ├── node.rs             # Raft logic
 │   │   ├── rpc.rs              # RPC handlers
-│   │   └── timer.rs            # Timeouts
+│   │   └── timer.rs            # Election timeouts
 │   ├── scheduler/
 │   │   ├── job.rs              # Job model
 │   │   ├── queue.rs            # Job queue
@@ -245,7 +252,10 @@ nomad-lite/
 │   ├── worker/
 │   │   ├── executor.rs         # Command execution
 │   │   └── heartbeat.rs        # Worker heartbeats
-│   ├── grpc/                   # gRPC services
+│   ├── grpc/
+│   │   ├── server.rs           # gRPC server setup
+│   │   ├── client_service.rs   # SchedulerService impl
+│   │   └── cluster_service.rs  # RaftService impl
 │   └── dashboard/              # Web UI
 ├── examples/submit_job.rs      # CLI client
 ├── Dockerfile
@@ -259,3 +269,56 @@ nomad-lite/
 - **Tonic** - gRPC framework
 - **Axum** - Web framework (dashboard)
 - **Prost** - Protocol Buffers
+
+## TODO
+
+### Critical (Security)
+
+- [ ] **Shell injection vulnerability** - `src/worker/executor.rs:26-35` runs arbitrary commands without sanitization. Implement command allowlist or sandboxing.
+- [ ] **No authentication** - gRPC (`src/grpc/server.rs`) and REST (`src/dashboard/mod.rs`) endpoints have no auth. Add mTLS or API keys.
+- [ ] **CORS allows all origins** - `src/dashboard/mod.rs:60` uses permissive CORS. Configure specific origins.
+- [ ] **No input validation** - `src/grpc/client_service.rs:36` accepts commands without validation. Add size limits and validation.
+- [ ] **Binds to 0.0.0.0** - `src/main.rs:64` exposes services on all interfaces by default.
+- [ ] **No rate limiting** - No protection against job submission floods.
+
+### High Priority (Error Handling)
+
+- [ ] **Unwrap in config** - `src/config.rs:23` uses `parse().unwrap()` in Default impl.
+- [ ] **Unwrap in main** - `src/main.rs:67` uses `parse().unwrap()` on dashboard_addr.
+- [ ] **Unwrap in dashboard** - `src/dashboard/mod.rs:74-75` uses `unwrap()` on server bind.
+- [ ] **Silent gRPC failures** - `src/node.rs:88-92` logs errors but node silently stops.
+- [ ] **Ignored send errors** - `src/raft/node.rs:222-228` silently ignores channel send failures.
+
+### High Priority (Testing)
+
+- [ ] **No integration tests** - Add tests for multi-node cluster operations.
+- [ ] **No failover tests** - Add tests for leader failure and election.
+- [ ] **No partition tests** - Add tests for network partition recovery.
+- [ ] **No dashboard tests** - `src/dashboard/mod.rs` has no REST API tests.
+- [ ] **No executor edge cases** - `src/worker/executor.rs` needs tests for empty output, large output, timeout.
+
+### High Priority (Technical Debt)
+
+- [ ] **No state persistence** - `src/raft/state.rs:50-51` keeps all state in memory. Use sled or rocksdb.
+- [ ] **No log compaction** - Log grows unbounded. Implement snapshots.
+- [ ] **Job output not replicated** - `src/node.rs:218` only leader has job output.
+
+### Medium Priority (Performance)
+
+- [ ] **Log cloned on heartbeat** - `src/raft/node.rs:220-221` clones full log every heartbeat (O(log_size)).
+- [ ] **Unbounded job queue** - `src/scheduler/queue.rs` has no size limits or cleanup policy.
+- [ ] **Polling loops** - `src/node.rs:141-143` uses polling instead of event-driven channels.
+- [ ] **No connection pooling** - `src/raft/node.rs:162` creates new client per request.
+- [ ] **ListJobs allocates Vec** - `src/grpc/client_service.rs:133-142` should use streaming.
+
+### Medium Priority (API Design)
+
+- [ ] **Error in response fields** - `src/grpc/client_service.rs:41-50` uses response fields for errors instead of gRPC status codes.
+- [ ] **No pagination** - `ListJobs` returns all jobs without pagination.
+- [ ] **Incomplete cluster status** - `GetClusterStatusResponse` only returns current node info.
+
+### Medium Priority (Documentation)
+
+- [ ] **Missing module docs** - Add doc comments to `src/raft/mod.rs`, `src/scheduler/mod.rs`, `src/worker/mod.rs`.
+- [ ] **Missing function docs** - Document `scheduler_loop()`, `run()`, and public APIs.
+- [ ] **No invariants documented** - Document Raft safety invariants as comments.
