@@ -296,7 +296,7 @@ nomad-lite/
 - [ ] **No failover tests** - Add tests for leader failure and election.
 - [ ] **No partition tests** - Add tests for network partition recovery.
 - [ ] **No dashboard tests** - `src/dashboard/mod.rs` has no REST API tests.
-- [ ] **No executor edge cases** - `src/worker/executor.rs` needs tests for empty output, large output, timeout.
+- [x] **No executor edge cases** - `src/worker/executor.rs` needs tests for empty output, large output, timeout.
 
 ### High Priority (Technical Debt)
 
