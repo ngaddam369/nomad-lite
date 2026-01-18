@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "net", "process"] }
 tonic = "0.12"
 prost = "0.13"
 uuid = { version = "1", features = ["v4", "serde"] }

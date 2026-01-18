@@ -168,13 +168,10 @@ fn test_apply_committed_entries_to_queue() {
 
     // Apply committed entries to job queue (simulating scheduler loop behavior)
     for entry in committed_entries {
-        match entry {
-            Command::SubmitJob { job_id, command } => {
-                if queue.get_job(&job_id).is_none() {
-                    queue.add_job(Job::with_id(job_id, command));
-                }
+        if let Command::SubmitJob { job_id, command } = entry {
+            if queue.get_job(&job_id).is_none() {
+                queue.add_job(Job::with_id(job_id, command));
             }
-            _ => {}
         }
     }
 
@@ -207,16 +204,14 @@ fn test_apply_job_status_update_from_committed_entry() {
     };
 
     // Apply the status update (simulating scheduler loop behavior)
-    match status_update {
-        Command::UpdateJobStatus {
-            job_id,
-            status,
-            output,
-            error,
-        } => {
-            queue.update_status(&job_id, status, output, error);
-        }
-        _ => {}
+    if let Command::UpdateJobStatus {
+        job_id,
+        status,
+        output,
+        error,
+    } = status_update
+    {
+        queue.update_status(&job_id, status, output, error);
     }
 
     // Verify status was updated
@@ -239,13 +234,10 @@ fn test_idempotent_entry_application() {
 
     // Apply the same entry twice (simulating potential redelivery)
     for _ in 0..2 {
-        match &command {
-            Command::SubmitJob { job_id, command } => {
-                if queue.get_job(job_id).is_none() {
-                    queue.add_job(Job::with_id(*job_id, command.clone()));
-                }
+        if let Command::SubmitJob { job_id, command } = &command {
+            if queue.get_job(job_id).is_none() {
+                queue.add_job(Job::with_id(*job_id, command.clone()));
             }
-            _ => {}
         }
     }
 

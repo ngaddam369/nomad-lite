@@ -259,7 +259,3 @@ nomad-lite/
 - **Tonic** - gRPC framework
 - **Axum** - Web framework (dashboard)
 - **Prost** - Protocol Buffers
-
-## Contributors
-
-Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
