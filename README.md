@@ -53,10 +53,11 @@ All nodes maintain consistent state through Raft log replication:
 | `SubmitJob` | Accepts and replicates | Rejects (returns leader hint) |
 | `ListJobs` | Returns all jobs | Returns all jobs (read-only) |
 | `GetJobStatus` | Returns job status | Returns job status (read-only) |
-| `GetClusterStatus` | Returns cluster info | Returns cluster info |
+| `GetClusterStatus` | Returns authoritative status | Forwards to leader |
 
 - **Write operations** (job submission) must go to the leader
 - **Read operations** (list jobs, get status) can be served by any node
+- **Cluster status** is always served by the leader (followers forward requests)
 - Followers automatically replicate committed entries from the leader
 
 ## Quick Start
@@ -230,96 +231,44 @@ cargo run -- --node-id 2 --port 50052 \
 # Nodes 3, 4, 5 follow the same pattern...
 ```
 
-## Project Structure
-
-```
-nomad-lite/
-├── proto/scheduler.proto       # gRPC definitions
-├── src/
-│   ├── main.rs                 # Entry point
-│   ├── lib.rs                  # Library exports
-│   ├── config.rs               # Configuration
-│   ├── error.rs                # Error types
-│   ├── node.rs                 # Main orchestration
-│   ├── raft/
-│   │   ├── state.rs            # Raft state & log
-│   │   ├── node.rs             # Raft logic
-│   │   ├── rpc.rs              # RPC handlers
-│   │   └── timer.rs            # Election timeouts
-│   ├── scheduler/
-│   │   ├── job.rs              # Job model
-│   │   ├── queue.rs            # Job queue
-│   │   └── assigner.rs         # Job assignment
-│   ├── worker/
-│   │   ├── executor.rs         # Command execution
-│   │   └── heartbeat.rs        # Worker heartbeats
-│   ├── grpc/
-│   │   ├── server.rs           # gRPC server setup
-│   │   ├── client_service.rs   # SchedulerService impl
-│   │   └── cluster_service.rs  # RaftService impl
-│   └── dashboard/              # Web UI
-├── examples/submit_job.rs      # CLI client
-├── Dockerfile
-└── docker-compose.yml
-```
-
-## Technologies
-
-- **Rust** - Systems programming language
-- **Tokio** - Async runtime
-- **Tonic** - gRPC framework
-- **Axum** - Web framework (dashboard)
-- **Prost** - Protocol Buffers
-
 ## TODO
 
 ### Critical (Security)
 
-- [ ] **Shell injection vulnerability** - `src/worker/executor.rs:26-35` runs arbitrary commands without sanitization. Implement command allowlist or sandboxing.
-- [ ] **No authentication** - gRPC (`src/grpc/server.rs`) and REST (`src/dashboard/mod.rs`) endpoints have no auth. Add mTLS or API keys.
-- [ ] **CORS allows all origins** - `src/dashboard/mod.rs:60` uses permissive CORS. Configure specific origins.
-- [ ] **No input validation** - `src/grpc/client_service.rs:36` accepts commands without validation. Add size limits and validation.
-- [ ] **Binds to 0.0.0.0** - `src/main.rs:64` exposes services on all interfaces by default.
+- [ ] **Shell injection vulnerability** - `src/worker/executor.rs` runs arbitrary commands without sanitization. Implement command allowlist or sandboxing.
+- [ ] **No authentication** - gRPC and REST endpoints have no auth. Add mTLS or API keys.
+- [ ] **CORS allows all origins** - `src/dashboard/mod.rs` uses permissive CORS. Configure specific origins.
+- [ ] **No input validation** - Commands accepted without validation. Add size limits and validation.
+- [ ] **Binds to 0.0.0.0** - Exposes services on all interfaces by default.
 - [ ] **No rate limiting** - No protection against job submission floods.
-
-### High Priority (Error Handling)
-
-- [x] **Unwrap in config** - `src/config.rs:23` uses `parse().unwrap()` in Default impl.
-- [x] **Unwrap in main** - `src/main.rs:67` uses `parse().unwrap()` on dashboard_addr.
-- [x] **Unwrap in dashboard** - `src/dashboard/mod.rs:74-75` uses `unwrap()` on server bind.
-- [x] **Silent gRPC failures** - `src/node.rs:88-92` logs errors but node silently stops.
-- [x] **Ignored send errors** - `src/raft/node.rs:222-228` silently ignores channel send failures.
 
 ### High Priority (Testing)
 
 - [ ] **No integration tests** - Add tests for multi-node cluster operations.
 - [ ] **No failover tests** - Add tests for leader failure and election.
 - [ ] **No partition tests** - Add tests for network partition recovery.
-- [x] **No dashboard tests** - `src/dashboard/mod.rs` has no REST API tests.
-- [x] **No executor edge cases** - `src/worker/executor.rs` needs tests for empty output, large output, timeout.
 
 ### High Priority (Technical Debt)
 
-- [ ] **No state persistence** - `src/raft/state.rs:50-51` keeps all state in memory. Use sled or rocksdb.
+- [ ] **No state persistence** - All state in memory. Use sled or rocksdb for durability.
 - [ ] **No log compaction** - Log grows unbounded. Implement snapshots.
-- [ ] **Job output not replicated** - `src/node.rs:218` only leader has job output.
+- [ ] **Job output not replicated** - Only leader has job output.
 
 ### Medium Priority (Performance)
 
-- [x] **Log cloned on heartbeat** - `src/raft/node.rs:220-221` clones full log every heartbeat (O(log_size)).
-- [x] **Unbounded job queue** - `src/scheduler/queue.rs` has no size limits or cleanup policy.
-- [x] **Polling loops** - `src/node.rs:141-143` uses polling instead of event-driven channels.
-- [ ] **No connection pooling** - `src/raft/node.rs:162` creates new client per request.
-- [ ] **ListJobs allocates Vec** - `src/grpc/client_service.rs:133-142` should use streaming.
+- [ ] **No connection pooling** - Creates new gRPC client per peer request.
+- [ ] **ListJobs allocates Vec** - Should use gRPC streaming for large job lists.
 
-### Medium Priority (API Design)
+### Completed
 
-- [x] **Error in response fields** - `src/grpc/client_service.rs:41-50` uses response fields for errors instead of gRPC status codes.
-- [x] **No pagination** - `ListJobs` returns all jobs without pagination.
-- [x] **Incomplete cluster status** - `GetClusterStatusResponse` only returns current node info.
-
-### Medium Priority (Documentation)
-
-- [x] **Missing module docs** - Add doc comments to `src/raft/mod.rs`, `src/scheduler/mod.rs`, `src/worker/mod.rs`.
-- [x] **Missing function docs** - Document `scheduler_loop()`, `run()`, and public APIs.
-- [x] **No invariants documented** - Document Raft safety invariants as comments.
+- [x] **Log cloned on heartbeat** - Now only clones entries needed for replication.
+- [x] **Unbounded job queue** - Added configurable max capacity (10,000) and cleanup.
+- [x] **Polling loops** - Scheduler now uses event-driven commit notifications.
+- [x] **Incomplete cluster status** - Followers now forward to leader for authoritative status.
+- [x] **Error handling** - Replaced unwraps with proper error handling.
+- [x] **No pagination** - ListJobs now supports pagination (100 default, max 1000).
+- [x] **Dashboard tests** - Added comprehensive REST API tests.
+- [x] **Executor edge cases** - Added tests for empty output, large output, stderr.
+- [x] **Module documentation** - Added doc comments to all modules.
+- [x] **Function documentation** - Documented scheduler_loop(), run(), and public APIs.
+- [x] **Raft invariants** - Documented safety invariants as comments.

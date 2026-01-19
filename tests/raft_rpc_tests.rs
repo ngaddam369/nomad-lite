@@ -262,5 +262,29 @@ async fn test_no_notification_when_commit_index_unchanged() {
 
     // Should timeout waiting for notification (none sent)
     let result = tokio::time::timeout(Duration::from_millis(50), commit_rx.changed()).await;
-    assert!(result.is_err(), "Should not receive notification when commit_index unchanged");
+    assert!(
+        result.is_err(),
+        "Should not receive notification when commit_index unchanged"
+    );
+}
+
+#[tokio::test]
+async fn test_peer_status_initially_dead() {
+    let mut config = NodeConfig::default();
+    config.peers = vec![
+        nomad_lite::config::PeerConfig {
+            node_id: 2,
+            addr: "127.0.0.1:50052".to_string(),
+        },
+        nomad_lite::config::PeerConfig {
+            node_id: 3,
+            addr: "127.0.0.1:50053".to_string(),
+        },
+    ];
+    let (raft_node, _rx) = RaftNode::new(config);
+
+    // Peers should initially be considered dead (no communication yet)
+    let status = raft_node.get_peers_status().await;
+    assert_eq!(status.get(&2), Some(&false));
+    assert_eq!(status.get(&3), Some(&false));
 }

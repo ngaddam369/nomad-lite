@@ -25,6 +25,9 @@ pub enum RaftMessage {
     TriggerElection,
 }
 
+/// Timeout for considering a peer as dead (3 seconds)
+const PEER_TIMEOUT_MS: u64 = 3000;
+
 /// The main Raft node that coordinates consensus
 pub struct RaftNode {
     pub id: u64,
@@ -35,6 +38,8 @@ pub struct RaftNode {
     last_heartbeat: Arc<RwLock<Instant>>,
     commit_notify_tx: watch::Sender<u64>,
     commit_notify_rx: watch::Receiver<u64>,
+    /// Tracks last successful response time from each peer
+    peer_last_seen: Arc<RwLock<HashMap<u64, Instant>>>,
 }
 
 impl RaftNode {
@@ -51,6 +56,7 @@ impl RaftNode {
             last_heartbeat: Arc::new(RwLock::new(Instant::now())),
             commit_notify_tx,
             commit_notify_rx,
+            peer_last_seen: Arc::new(RwLock::new(HashMap::new())),
         };
 
         (node, message_rx)
@@ -65,6 +71,23 @@ impl RaftNode {
     /// when new entries are committed.
     pub fn subscribe_commits(&self) -> watch::Receiver<u64> {
         self.commit_notify_rx.clone()
+    }
+
+    /// Get the status of all configured peers based on recent communication.
+    /// Only meaningful when called on the leader (who communicates with all peers).
+    pub async fn get_peers_status(&self) -> HashMap<u64, bool> {
+        let last_seen = self.peer_last_seen.read().await;
+        self.config
+            .peers
+            .iter()
+            .map(|p| {
+                let is_alive = last_seen
+                    .get(&p.node_id)
+                    .map(|instant| instant.elapsed().as_millis() < PEER_TIMEOUT_MS as u128)
+                    .unwrap_or(false);
+                (p.node_id, is_alive)
+            })
+            .collect()
     }
 
     /// Connect to peer nodes
@@ -174,6 +197,13 @@ impl RaftNode {
             match timeout(Duration::from_millis(100), client.request_vote(req)).await {
                 Ok(Ok(response)) => {
                     let resp = response.into_inner();
+
+                    // Record successful response from peer
+                    self.peer_last_seen
+                        .write()
+                        .await
+                        .insert(*peer_id, Instant::now());
+
                     if resp.term > term {
                         // Higher term seen, become follower
                         self.state.write().await.become_follower(resp.term);
@@ -272,12 +302,17 @@ impl RaftNode {
             let peer_id = *peer_id;
             let state = self.state.clone();
             let commit_notify = self.commit_notify_tx.clone();
+            let peer_last_seen = self.peer_last_seen.clone();
 
             // Send AppendEntries asynchronously
             tokio::spawn(async move {
                 match timeout(Duration::from_millis(100), client.append_entries(req)).await {
                     Ok(Ok(response)) => {
                         let resp = response.into_inner();
+
+                        // Record successful response from peer
+                        peer_last_seen.write().await.insert(peer_id, Instant::now());
+
                         let mut state = state.write().await;
 
                         if resp.term > state.current_term {

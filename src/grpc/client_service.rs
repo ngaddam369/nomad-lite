@@ -4,6 +4,7 @@ use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
 use crate::config::NodeConfig;
+use crate::proto::scheduler_service_client::SchedulerServiceClient;
 use crate::proto::scheduler_service_server::SchedulerService;
 use crate::proto::{
     GetClusterStatusRequest, GetClusterStatusResponse, GetJobStatusRequest, GetJobStatusResponse,
@@ -178,24 +179,32 @@ impl SchedulerService for ClientService {
         &self,
         _request: Request<GetClusterStatusRequest>,
     ) -> Result<Response<GetClusterStatusResponse>, Status> {
+        // If we're not the leader, forward request to the leader
+        if !self.raft_node.is_leader().await {
+            return self.forward_cluster_status_to_leader().await;
+        }
+
+        // We're the leader - return authoritative cluster status
         let state = self.raft_node.state.read().await;
+        let peers_status = self.raft_node.get_peers_status().await;
 
         // Build node list: current node + all peers
         let mut nodes = Vec::with_capacity(self.config.peers.len() + 1);
 
-        // Add current node
+        // Add current node (leader is always alive)
         nodes.push(NodeInfo {
             node_id: self.config.node_id,
             address: self.config.listen_addr.to_string(),
             is_alive: true,
         });
 
-        // Add all peer nodes
+        // Add all peer nodes with their health status from heartbeat responses
         for peer in &self.config.peers {
+            let is_alive = peers_status.get(&peer.node_id).copied().unwrap_or(false);
             nodes.push(NodeInfo {
                 node_id: peer.node_id,
                 address: peer.addr.clone(),
-                is_alive: true, // TODO: Track actual peer health
+                is_alive,
             });
         }
 
@@ -209,6 +218,39 @@ impl SchedulerService for ClientService {
             leader_id: state.leader_id,
             nodes,
         }))
+    }
+}
+
+impl ClientService {
+    /// Forward cluster status request to the current leader
+    async fn forward_cluster_status_to_leader(
+        &self,
+    ) -> Result<Response<GetClusterStatusResponse>, Status> {
+        let leader_id = self.raft_node.get_leader_id().await;
+
+        let leader_addr = match leader_id {
+            Some(id) => self
+                .config
+                .peers
+                .iter()
+                .find(|p| p.node_id == id)
+                .map(|p| p.addr.clone()),
+            None => None,
+        };
+
+        let addr =
+            leader_addr.ok_or_else(|| Status::unavailable("Leader unknown, please retry later"))?;
+
+        let mut client = SchedulerServiceClient::connect(format!("http://{}", addr))
+            .await
+            .map_err(|e| Status::unavailable(format!("Failed to connect to leader: {}", e)))?;
+
+        let response = client
+            .get_cluster_status(GetClusterStatusRequest {})
+            .await
+            .map_err(|e| Status::unavailable(format!("Leader request failed: {}", e)))?;
+
+        Ok(response)
     }
 }
 
