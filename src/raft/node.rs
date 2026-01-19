@@ -218,7 +218,12 @@ impl RaftNode {
         let term = state.current_term;
         let commit_index = state.commit_index;
         let next_index = state.next_index.clone();
-        let log_snapshot: Vec<_> = state.log.clone();
+
+        // Only clone log entries that might be needed for replication.
+        // Start from (min_next_index - 1) to include the entry needed for prev_log_term.
+        let min_next_index = next_index.values().copied().min().unwrap_or(1);
+        let entries_start = min_next_index.saturating_sub(1).max(1);
+        let log_entries = state.get_entries_from(entries_start);
         drop(state);
 
         let peers = self.peers.lock().await;
@@ -229,14 +234,15 @@ impl RaftNode {
             let prev_log_term = if prev_log_index == 0 {
                 0
             } else {
-                log_snapshot
-                    .get((prev_log_index - 1) as usize)
+                log_entries
+                    .iter()
+                    .find(|e| e.index == prev_log_index)
                     .map(|e| e.term)
                     .unwrap_or(0)
             };
 
             // Get entries to send
-            let entries: Vec<_> = log_snapshot
+            let entries: Vec<_> = log_entries
                 .iter()
                 .filter(|e| e.index >= peer_next_index)
                 .map(log_entry_to_proto)
