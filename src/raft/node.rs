@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{mpsc, watch, Mutex, RwLock};
 use tokio::time::{timeout, Duration, Instant};
 use tonic::transport::Channel;
 
@@ -33,11 +33,14 @@ pub struct RaftNode {
     peers: Arc<Mutex<HashMap<u64, RaftServiceClient<Channel>>>>,
     message_tx: mpsc::Sender<RaftMessage>,
     last_heartbeat: Arc<RwLock<Instant>>,
+    commit_notify_tx: watch::Sender<u64>,
+    commit_notify_rx: watch::Receiver<u64>,
 }
 
 impl RaftNode {
     pub fn new(config: NodeConfig) -> (Self, mpsc::Receiver<RaftMessage>) {
         let (message_tx, message_rx) = mpsc::channel(100);
+        let (commit_notify_tx, commit_notify_rx) = watch::channel(0);
 
         let node = Self {
             id: config.node_id,
@@ -46,6 +49,8 @@ impl RaftNode {
             peers: Arc::new(Mutex::new(HashMap::new())),
             message_tx,
             last_heartbeat: Arc::new(RwLock::new(Instant::now())),
+            commit_notify_tx,
+            commit_notify_rx,
         };
 
         (node, message_rx)
@@ -54,6 +59,12 @@ impl RaftNode {
     /// Get the message sender for external communication
     pub fn message_sender(&self) -> mpsc::Sender<RaftMessage> {
         self.message_tx.clone()
+    }
+
+    /// Subscribe to commit index updates. Returns a receiver that gets notified
+    /// when new entries are committed.
+    pub fn subscribe_commits(&self) -> watch::Receiver<u64> {
+        self.commit_notify_rx.clone()
     }
 
     /// Connect to peer nodes
@@ -260,6 +271,7 @@ impl RaftNode {
             let mut client = client.clone();
             let peer_id = *peer_id;
             let state = self.state.clone();
+            let commit_notify = self.commit_notify_tx.clone();
 
             // Send AppendEntries asynchronously
             tokio::spawn(async move {
@@ -291,6 +303,7 @@ impl RaftNode {
                                 if let Some(entry) = state.get_entry(new_commit_index) {
                                     if entry.term == state.current_term {
                                         state.commit_index = new_commit_index;
+                                        let _ = commit_notify.send(new_commit_index);
                                         tracing::debug!(
                                             commit_index = new_commit_index,
                                             "Updated commit index"
@@ -351,7 +364,13 @@ impl RaftNode {
         req: AppendEntriesRequest,
     ) -> crate::proto::AppendEntriesResponse {
         let mut state = self.state.write().await;
+        let old_commit_index = state.commit_index;
         let response = handle_append_entries(&mut state, &req, self.id);
+
+        // Notify if commit_index advanced
+        if response.success && state.commit_index > old_commit_index {
+            let _ = self.commit_notify_tx.send(state.commit_index);
+        }
 
         // Reset election timeout on successful AppendEntries
         if response.success {

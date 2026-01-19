@@ -113,7 +113,7 @@ impl Node {
     /// This loop runs on all nodes and performs two key functions:
     ///
     /// ## 1. Apply Committed Entries (all nodes)
-    /// Polls Raft for newly committed log entries and applies them to local state:
+    /// Waits for commit notifications from Raft and applies them to local state:
     /// - `SubmitJob`: Adds job to queue if not already present (idempotent)
     /// - `UpdateJobStatus`: Updates job status, output, and error
     /// - `RegisterWorker`: Registers worker with the job assigner
@@ -123,59 +123,68 @@ impl Node {
     /// ## 2. Assign Jobs (leader only)
     /// The leader assigns pending jobs to available workers using
     /// least-loaded scheduling. Followers skip this step.
-    ///
-    /// # Polling Interval
-    /// Runs every 100ms. See TODO for event-driven improvements.
     async fn scheduler_loop(
         raft_node: Arc<RaftNode>,
         job_queue: Arc<RwLock<JobQueue>>,
         job_assigner: Arc<RwLock<JobAssigner>>,
     ) {
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(100));
+        let mut commit_rx = raft_node.subscribe_commits();
+        // Interval for leader job assignment (doesn't need to be as frequent)
+        let mut assign_interval = tokio::time::interval(tokio::time::Duration::from_millis(100));
 
         loop {
-            interval.tick().await;
+            tokio::select! {
+                // Wait for commit notifications
+                result = commit_rx.changed() => {
+                    if result.is_err() {
+                        // Channel closed, exit loop
+                        break;
+                    }
 
-            // All nodes apply committed entries to maintain consistent state
-            let entries = raft_node.get_committed_entries().await;
-            for entry in entries {
-                match entry.command {
-                    Command::SubmitJob { job_id, command } => {
-                        let mut queue = job_queue.write().await;
-                        if queue.get_job(&job_id).is_none() {
-                            if queue.add_job(Job::with_id(job_id, command)) {
-                                tracing::debug!(job_id = %job_id, "Job added from committed entry");
-                            } else {
-                                tracing::warn!(job_id = %job_id, "Job queue at capacity, job dropped");
+                    // Apply committed entries
+                    let entries = raft_node.get_committed_entries().await;
+                    for entry in entries {
+                        match entry.command {
+                            Command::SubmitJob { job_id, command } => {
+                                let mut queue = job_queue.write().await;
+                                if queue.get_job(&job_id).is_none() {
+                                    if queue.add_job(Job::with_id(job_id, command)) {
+                                        tracing::debug!(job_id = %job_id, "Job added from committed entry");
+                                    } else {
+                                        tracing::warn!(job_id = %job_id, "Job queue at capacity, job dropped");
+                                    }
+                                }
                             }
+                            Command::UpdateJobStatus {
+                                job_id,
+                                status,
+                                output,
+                                error,
+                            } => {
+                                let mut queue = job_queue.write().await;
+                                queue.update_status(&job_id, status, output, error);
+                                tracing::debug!(job_id = %job_id, status = %status, "Job status updated");
+                            }
+                            Command::RegisterWorker { worker_id } => {
+                                job_assigner.write().await.register_worker(worker_id);
+                            }
+                            Command::Noop => {}
                         }
                     }
-                    Command::UpdateJobStatus {
-                        job_id,
-                        status,
-                        output,
-                        error,
-                    } => {
-                        let mut queue = job_queue.write().await;
-                        queue.update_status(&job_id, status, output, error);
-                        tracing::debug!(job_id = %job_id, status = %status, "Job status updated");
-                    }
-                    Command::RegisterWorker { worker_id } => {
-                        job_assigner.write().await.register_worker(worker_id);
-                    }
-                    Command::Noop => {}
                 }
-            }
 
-            // Only leader assigns pending jobs to available workers
-            if !raft_node.is_leader().await {
-                continue;
-            }
+                // Leader job assignment on interval
+                _ = assign_interval.tick() => {
+                    if !raft_node.is_leader().await {
+                        continue;
+                    }
 
-            let mut queue = job_queue.write().await;
-            let mut assigner = job_assigner.write().await;
-            while let Some((_job_id, _worker_id)) = assigner.assign_next_job(&mut queue) {
-                // Job assigned
+                    let mut queue = job_queue.write().await;
+                    let mut assigner = job_assigner.write().await;
+                    while let Some((_job_id, _worker_id)) = assigner.assign_next_job(&mut queue) {
+                        // Job assigned
+                    }
+                }
             }
         }
     }
