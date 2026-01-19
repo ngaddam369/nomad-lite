@@ -143,8 +143,11 @@ impl Node {
                     Command::SubmitJob { job_id, command } => {
                         let mut queue = job_queue.write().await;
                         if queue.get_job(&job_id).is_none() {
-                            queue.add_job(Job::with_id(job_id, command));
-                            tracing::debug!(job_id = %job_id, "Job added from committed entry");
+                            if queue.add_job(Job::with_id(job_id, command)) {
+                                tracing::debug!(job_id = %job_id, "Job added from committed entry");
+                            } else {
+                                tracing::warn!(job_id = %job_id, "Job queue at capacity, job dropped");
+                            }
                         }
                     }
                     Command::UpdateJobStatus {

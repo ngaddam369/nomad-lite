@@ -244,3 +244,75 @@ fn test_idempotent_entry_application() {
     // Should only have one job
     assert_eq!(queue.all_jobs().len(), 1);
 }
+
+#[test]
+fn test_queue_capacity_limit() {
+    let mut queue = JobQueue::with_capacity(3);
+
+    // Add jobs up to capacity
+    assert!(queue.add_job(Job::new("echo 1".to_string())));
+    assert!(queue.add_job(Job::new("echo 2".to_string())));
+    assert!(queue.add_job(Job::new("echo 3".to_string())));
+
+    // Queue should be full
+    assert!(queue.is_full());
+    assert_eq!(queue.len(), 3);
+
+    // Adding more jobs should fail
+    assert!(!queue.add_job(Job::new("echo 4".to_string())));
+    assert_eq!(queue.len(), 3);
+}
+
+#[test]
+fn test_cleanup_finished_jobs() {
+    let mut queue = JobQueue::new();
+
+    // Add jobs with different statuses
+    let mut job1 = Job::new("echo 1".to_string());
+    let mut job2 = Job::new("echo 2".to_string());
+    let mut job3 = Job::new("echo 3".to_string());
+    let mut job4 = Job::new("echo 4".to_string());
+
+    job1.status = JobStatus::Pending;
+    job2.status = JobStatus::Running;
+    job3.status = JobStatus::Completed;
+    job4.status = JobStatus::Failed;
+
+    queue.add_job(job1);
+    queue.add_job(job2);
+    queue.add_job(job3);
+    queue.add_job(job4);
+
+    assert_eq!(queue.len(), 4);
+
+    // Cleanup should remove completed and failed jobs
+    let removed = queue.cleanup_finished_jobs();
+    assert_eq!(removed, 2);
+    assert_eq!(queue.len(), 2);
+
+    // Only pending and running jobs should remain
+    for job in queue.all_jobs() {
+        assert!(job.status == JobStatus::Pending || job.status == JobStatus::Running);
+    }
+}
+
+#[test]
+fn test_queue_helper_methods() {
+    let mut queue = JobQueue::with_capacity(2);
+
+    assert!(queue.is_empty());
+    assert!(!queue.is_full());
+    assert_eq!(queue.len(), 0);
+
+    queue.add_job(Job::new("echo 1".to_string()));
+
+    assert!(!queue.is_empty());
+    assert!(!queue.is_full());
+    assert_eq!(queue.len(), 1);
+
+    queue.add_job(Job::new("echo 2".to_string()));
+
+    assert!(!queue.is_empty());
+    assert!(queue.is_full());
+    assert_eq!(queue.len(), 2);
+}

@@ -306,8 +306,8 @@ nomad-lite/
 
 ### Medium Priority (Performance)
 
-- [ ] **Log cloned on heartbeat** - `src/raft/node.rs:220-221` clones full log every heartbeat (O(log_size)).
-- [ ] **Unbounded job queue** - `src/scheduler/queue.rs` has no size limits or cleanup policy.
+- [x] **Log cloned on heartbeat** - `src/raft/node.rs:220-221` clones full log every heartbeat (O(log_size)).
+- [x] **Unbounded job queue** - `src/scheduler/queue.rs` has no size limits or cleanup policy.
 - [ ] **Polling loops** - `src/node.rs:141-143` uses polling instead of event-driven channels.
 - [ ] **No connection pooling** - `src/raft/node.rs:162` creates new client per request.
 - [ ] **ListJobs allocates Vec** - `src/grpc/client_service.rs:133-142` should use streaming.

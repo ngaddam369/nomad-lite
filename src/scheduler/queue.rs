@@ -3,22 +3,40 @@ use uuid::Uuid;
 
 use crate::scheduler::job::{Job, JobStatus};
 
+const DEFAULT_MAX_JOBS: usize = 10_000;
+
 /// Manages the job queue and job state
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct JobQueue {
     jobs: HashMap<Uuid, Job>,
+    max_jobs: usize,
+}
+
+impl Default for JobQueue {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl JobQueue {
     pub fn new() -> Self {
+        Self::with_capacity(DEFAULT_MAX_JOBS)
+    }
+
+    pub fn with_capacity(max_jobs: usize) -> Self {
         Self {
             jobs: HashMap::new(),
+            max_jobs,
         }
     }
 
-    /// Add a new job to the queue
-    pub fn add_job(&mut self, job: Job) {
+    /// Add a new job to the queue. Returns false if the queue is at capacity.
+    pub fn add_job(&mut self, job: Job) -> bool {
+        if self.jobs.len() >= self.max_jobs {
+            return false;
+        }
         self.jobs.insert(job.id, job);
+        true
     }
 
     /// Get a job by ID
@@ -83,5 +101,28 @@ impl JobQueue {
             .values()
             .filter(|j| j.assigned_worker == Some(worker_id))
             .collect()
+    }
+
+    /// Remove completed and failed jobs from the queue. Returns the number of jobs removed.
+    pub fn cleanup_finished_jobs(&mut self) -> usize {
+        let before = self.jobs.len();
+        self.jobs
+            .retain(|_, job| job.status != JobStatus::Completed && job.status != JobStatus::Failed);
+        before - self.jobs.len()
+    }
+
+    /// Returns the current number of jobs in the queue
+    pub fn len(&self) -> usize {
+        self.jobs.len()
+    }
+
+    /// Returns true if the queue is empty
+    pub fn is_empty(&self) -> bool {
+        self.jobs.is_empty()
+    }
+
+    /// Returns true if the queue is at capacity
+    pub fn is_full(&self) -> bool {
+        self.jobs.len() >= self.max_jobs
     }
 }

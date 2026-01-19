@@ -84,7 +84,9 @@ impl SchedulerService for ClientService {
         match rx.await {
             Ok(Ok(_index)) => {
                 // Add job to queue
-                self.job_queue.write().await.add_job(job);
+                if !self.job_queue.write().await.add_job(job) {
+                    return Err(Status::resource_exhausted("Job queue is at capacity"));
+                }
 
                 tracing::info!(job_id = %job_id, "Job submitted");
                 Ok(Response::new(SubmitJobResponse {

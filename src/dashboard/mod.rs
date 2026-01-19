@@ -170,7 +170,16 @@ async fn submit_job_handler(
 
     match rx.await {
         Ok(Ok(_)) => {
-            state.job_queue.write().await.add_job(job);
+            if !state.job_queue.write().await.add_job(job) {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(SubmitJobResponse {
+                        success: false,
+                        job_id: None,
+                        error: Some("Job queue is at capacity".to_string()),
+                    }),
+                );
+            }
             (
                 StatusCode::OK,
                 Json(SubmitJobResponse {
