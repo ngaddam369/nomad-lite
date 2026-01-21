@@ -26,12 +26,12 @@ impl std::fmt::Display for RaftRole {
 pub enum Command {
     /// Submit a new job
     SubmitJob { job_id: Uuid, command: String },
-    /// Update job status
+    /// Update job status (metadata only - output stored locally on executing node)
     UpdateJobStatus {
         job_id: Uuid,
         status: JobStatus,
-        output: Option<String>,
-        error: Option<String>,
+        executed_by: u64,
+        exit_code: Option<i32>,
     },
     /// Register a worker
     RegisterWorker { worker_id: u64 },

@@ -10,6 +10,7 @@ use crate::scheduler::JobStatus;
 pub struct ExecutionResult {
     pub job_id: Uuid,
     pub status: JobStatus,
+    pub exit_code: Option<i32>,
     pub output: Option<String>,
     pub error: Option<String>,
 }
@@ -105,6 +106,7 @@ impl JobExecutor {
             Ok(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout).to_string();
                 let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                let exit_code = output.status.code();
 
                 let (status, error) = if output.status.success() {
                     (JobStatus::Completed, None)
@@ -112,7 +114,7 @@ impl JobExecutor {
                     (
                         JobStatus::Failed,
                         Some(if stderr.is_empty() {
-                            format!("Exit code: {:?}", output.status.code())
+                            format!("Exit code: {:?}", exit_code)
                         } else {
                             stderr.clone()
                         }),
@@ -122,13 +124,14 @@ impl JobExecutor {
                 tracing::info!(
                     job_id = %job_id,
                     status = %status,
-                    exit_code = ?output.status.code(),
+                    exit_code = ?exit_code,
                     "Job completed"
                 );
 
                 ExecutionResult {
                     job_id,
                     status,
+                    exit_code,
                     output: if stdout.is_empty() {
                         None
                     } else {
@@ -142,6 +145,7 @@ impl JobExecutor {
                 ExecutionResult {
                     job_id,
                     status: JobStatus::Failed,
+                    exit_code: None,
                     output: None,
                     error: Some(e.to_string()),
                 }

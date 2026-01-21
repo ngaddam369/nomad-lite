@@ -62,8 +62,8 @@ message SubmitJobCommand {
 message UpdateJobStatusCommand {
     string job_id = 1;
     JobStatus status = 2;
-    string output = 3;
-    string error = 4;
+    uint64 executed_by = 3;
+    optional int32 exit_code = 4;
 }
 
 message RegisterWorkerCommand {
@@ -108,6 +108,8 @@ message GetJobStatusResponse {
     string output = 3;
     string error = 4;
     uint64 assigned_worker = 5;
+    uint64 executed_by = 6;
+    optional int32 exit_code = 7;
 }
 
 message ListJobsRequest {
@@ -151,6 +153,24 @@ message NodeInfo {
     uint64 node_id = 1;
     string address = 2;
     bool is_alive = 3;
+}
+
+// ==================== Internal Node-to-Node API ====================
+
+service InternalService {
+    // Fetch job output from the node that executed it
+    rpc GetJobOutput(GetJobOutputRequest) returns (GetJobOutputResponse);
+}
+
+message GetJobOutputRequest {
+    string job_id = 1;
+}
+
+message GetJobOutputResponse {
+    string job_id = 1;
+    string output = 2;
+    string error = 3;
+    bool found = 4;
 }
 
 enum JobStatus {

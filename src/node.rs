@@ -166,12 +166,12 @@ impl Node {
                             Command::UpdateJobStatus {
                                 job_id,
                                 status,
-                                output,
-                                error,
+                                executed_by,
+                                exit_code,
                             } => {
                                 let mut queue = job_queue.write().await;
-                                queue.update_status(&job_id, status, output, error);
-                                tracing::debug!(job_id = %job_id, status = %status, "Job status updated");
+                                queue.update_status_metadata(&job_id, status, executed_by, exit_code);
+                                tracing::debug!(job_id = %job_id, status = %status, executed_by, "Job status updated");
                             }
                             Command::RegisterWorker { worker_id } => {
                                 job_assigner.write().await.register_worker(worker_id);
@@ -264,10 +264,17 @@ impl Node {
             for (job_id, command) in jobs_to_run {
                 let result = executor.execute(job_id, &command).await;
 
-                // Update job status
+                // Update local job with full result (output stored locally only)
                 {
                     let mut queue = job_queue.write().await;
-                    queue.update_status(&job_id, result.status, result.output, result.error);
+                    queue.update_job_result(
+                        &job_id,
+                        result.status,
+                        node_id,
+                        result.exit_code,
+                        result.output,
+                        result.error,
+                    );
                 }
 
                 // Mark job completed in assigner
@@ -276,13 +283,13 @@ impl Node {
                     assigner.job_completed(node_id, &job_id);
                 }
 
-                // If leader, replicate the status update
+                // If leader, replicate the metadata (not output) through Raft
                 if raft_node.is_leader().await {
                     let command = Command::UpdateJobStatus {
                         job_id,
                         status: result.status,
-                        output: None, // Don't replicate full output
-                        error: None,
+                        executed_by: node_id,
+                        exit_code: result.exit_code,
                     };
                     let (tx, _rx) = tokio::sync::oneshot::channel();
                     if let Err(e) = raft_node

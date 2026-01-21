@@ -429,10 +429,10 @@ cargo run -- --node-id 2 --port 50052 \
 
 - [ ] **No state persistence** - All state in memory. Use sled or rocksdb for durability.
 - [ ] **No log compaction** - Log grows unbounded. Implement snapshots.
-- [ ] **Job output not replicated** - Only leader has job output.
 
 ### Completed
 
+- [x] **Job output replication** - Output stored locally on executing node, metadata (status, executed_by, exit_code) replicated via Raft. GetJobStatus forwards to executing node for output retrieval.
 - [x] **Docker sandboxing** - Jobs can run in isolated Docker containers with `--sandbox` flag.
 - [x] **Job streaming** - Added `StreamJobs` gRPC streaming endpoint for memory-efficient large job lists.
 - [x] **Connection pooling** - Added client connection pool for request forwarding.

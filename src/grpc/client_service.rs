@@ -8,12 +8,13 @@ use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
 use crate::config::NodeConfig;
+use crate::proto::internal_service_client::InternalServiceClient;
 use crate::proto::scheduler_service_client::SchedulerServiceClient;
 use crate::proto::scheduler_service_server::SchedulerService;
 use crate::proto::{
-    GetClusterStatusRequest, GetClusterStatusResponse, GetJobStatusRequest, GetJobStatusResponse,
-    JobInfo, JobStatus as ProtoJobStatus, ListJobsRequest, ListJobsResponse, NodeInfo,
-    StreamJobsRequest, SubmitJobRequest, SubmitJobResponse,
+    GetClusterStatusRequest, GetClusterStatusResponse, GetJobOutputRequest, GetJobStatusRequest,
+    GetJobStatusResponse, JobInfo, JobStatus as ProtoJobStatus, ListJobsRequest, ListJobsResponse,
+    NodeInfo, StreamJobsRequest, SubmitJobRequest, SubmitJobResponse,
 };
 use crate::raft::{Command, RaftNode};
 use crate::scheduler::{Job, JobQueue, JobStatus};
@@ -25,6 +26,8 @@ pub struct ClientService {
     job_queue: Arc<RwLock<JobQueue>>,
     /// Connection pool for forwarding requests to other nodes
     client_pool: Arc<Mutex<HashMap<u64, SchedulerServiceClient<Channel>>>>,
+    /// Connection pool for internal service requests (fetching job output)
+    internal_pool: Arc<Mutex<HashMap<u64, InternalServiceClient<Channel>>>>,
 }
 
 impl ClientService {
@@ -38,6 +41,7 @@ impl ClientService {
             raft_node,
             job_queue,
             client_pool: Arc::new(Mutex::new(HashMap::new())),
+            internal_pool: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -68,6 +72,58 @@ impl ClientService {
 
         pool.insert(node_id, client.clone());
         Ok(client)
+    }
+
+    /// Get or create a cached internal service connection to a peer node
+    async fn get_internal_client(
+        &self,
+        node_id: u64,
+    ) -> Result<InternalServiceClient<Channel>, Status> {
+        let mut pool = self.internal_pool.lock().await;
+
+        if let Some(client) = pool.get(&node_id) {
+            return Ok(client.clone());
+        }
+
+        let peer_addr = self
+            .config
+            .peers
+            .iter()
+            .find(|p| p.node_id == node_id)
+            .map(|p| p.addr.clone())
+            .ok_or_else(|| Status::not_found(format!("Unknown node {}", node_id)))?;
+
+        let client = InternalServiceClient::connect(format!("http://{}", peer_addr))
+            .await
+            .map_err(|e| {
+                Status::unavailable(format!("Failed to connect to node {}: {}", node_id, e))
+            })?;
+
+        pool.insert(node_id, client.clone());
+        Ok(client)
+    }
+
+    /// Fetch job output from the node that executed it
+    async fn fetch_output_from_node(
+        &self,
+        node_id: u64,
+        job_id: &Uuid,
+    ) -> Result<(String, String), Status> {
+        let mut client = self.get_internal_client(node_id).await?;
+
+        let response = client
+            .get_job_output(GetJobOutputRequest {
+                job_id: job_id.to_string(),
+            })
+            .await
+            .map_err(|e| Status::unavailable(format!("Failed to fetch output: {}", e)))?;
+
+        let resp = response.into_inner();
+        if resp.found {
+            Ok((resp.output, resp.error))
+        } else {
+            Err(Status::not_found("Output not found on executing node"))
+        }
     }
 }
 
@@ -149,16 +205,43 @@ impl SchedulerService for ClientService {
             Uuid::parse_str(&req.job_id).map_err(|_| Status::invalid_argument("Invalid job ID"))?;
 
         let queue = self.job_queue.read().await;
-        match queue.get_job(&job_id) {
-            Some(job) => Ok(Response::new(GetJobStatusResponse {
-                job_id: job.id.to_string(),
-                status: status_to_proto(&job.status) as i32,
-                output: job.output.clone().unwrap_or_default(),
-                error: job.error.clone().unwrap_or_default(),
-                assigned_worker: job.assigned_worker.unwrap_or(0),
-            })),
-            None => Err(Status::not_found("Job not found")),
+        let job = queue
+            .get_job(&job_id)
+            .ok_or_else(|| Status::not_found("Job not found"))?;
+
+        // Build base response with metadata (available on all nodes via Raft)
+        let mut response = GetJobStatusResponse {
+            job_id: job.id.to_string(),
+            status: status_to_proto(&job.status) as i32,
+            output: String::new(),
+            error: String::new(),
+            assigned_worker: job.assigned_worker.unwrap_or(0),
+            executed_by: job.executed_by.unwrap_or(0),
+            exit_code: job.exit_code,
+        };
+
+        // If this node executed the job, we have the output locally
+        if job.executed_by == Some(self.config.node_id) {
+            response.output = job.output.clone().unwrap_or_default();
+            response.error = job.error.clone().unwrap_or_default();
+            return Ok(Response::new(response));
         }
+
+        // If another node executed it and job is completed/failed, fetch output
+        if let Some(executed_by) = job.executed_by {
+            if job.status == JobStatus::Completed || job.status == JobStatus::Failed {
+                drop(queue); // Release lock before making network call
+
+                if let Ok((output, error)) = self.fetch_output_from_node(executed_by, &job_id).await
+                {
+                    response.output = output;
+                    response.error = error;
+                }
+                // If fetch fails, return response with empty output (best effort)
+            }
+        }
+
+        Ok(Response::new(response))
     }
 
     async fn list_jobs(

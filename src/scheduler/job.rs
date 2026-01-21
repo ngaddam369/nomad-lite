@@ -26,6 +26,8 @@ pub struct Job {
     pub command: String,
     pub status: JobStatus,
     pub assigned_worker: Option<u64>,
+    pub executed_by: Option<u64>,
+    pub exit_code: Option<i32>,
     pub output: Option<String>,
     pub error: Option<String>,
 }
@@ -37,6 +39,8 @@ impl Job {
             command,
             status: JobStatus::Pending,
             assigned_worker: None,
+            executed_by: None,
+            exit_code: None,
             output: None,
             error: None,
         }
@@ -48,6 +52,8 @@ impl Job {
             command,
             status: JobStatus::Pending,
             assigned_worker: None,
+            executed_by: None,
+            exit_code: None,
             output: None,
             error: None,
         }

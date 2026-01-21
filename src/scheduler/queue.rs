@@ -49,7 +49,7 @@ impl JobQueue {
         self.jobs.get_mut(id)
     }
 
-    /// Update job status
+    /// Update job status (legacy method for backwards compatibility)
     pub fn update_status(
         &mut self,
         id: &Uuid,
@@ -65,6 +65,50 @@ impl JobQueue {
             if error.is_some() {
                 job.error = error;
             }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Update job with full execution result (used by executing node).
+    /// This stores output locally - it won't be replicated through Raft.
+    pub fn update_job_result(
+        &mut self,
+        id: &Uuid,
+        status: JobStatus,
+        executed_by: u64,
+        exit_code: Option<i32>,
+        output: Option<String>,
+        error: Option<String>,
+    ) -> bool {
+        if let Some(job) = self.jobs.get_mut(id) {
+            job.status = status;
+            job.executed_by = Some(executed_by);
+            job.exit_code = exit_code;
+            job.output = output;
+            job.error = error;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Update job metadata from Raft replication (no output).
+    /// Output stays on the executing node - only metadata is replicated.
+    pub fn update_status_metadata(
+        &mut self,
+        id: &Uuid,
+        status: JobStatus,
+        executed_by: u64,
+        exit_code: Option<i32>,
+    ) -> bool {
+        if let Some(job) = self.jobs.get_mut(id) {
+            job.status = status;
+            job.executed_by = Some(executed_by);
+            job.exit_code = exit_code;
+            // Note: output and error are NOT updated here
+            // They remain None on non-executing nodes
             true
         } else {
             false
