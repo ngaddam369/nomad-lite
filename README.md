@@ -10,6 +10,36 @@ The Jobs are simple shell commands like `echo hello`, `sleep 5` etc.
 - **gRPC API** - Type-safe client communication using tonic
 - **Web Dashboard** - Real-time cluster monitoring and job management
 - **Automatic Failover** - New leader elected when current leader fails
+- **Docker Sandboxing** - Optional isolated execution environment for jobs
+
+## Requirements
+
+| Dependency | Version | Required | Notes |
+|------------|---------|----------|-------|
+| Rust | 1.56+ | Yes | 2021 edition |
+| protoc | 3.0+ | Yes | Protocol Buffers compiler for gRPC |
+| Docker | 20.0+ | No | Only for sandboxing (see [Sandboxing](#sandboxing)) |
+
+### Installing Dependencies
+
+**Rust:**
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+**Protocol Buffers (protoc):**
+
+```bash
+# Ubuntu/Debian
+sudo apt install protobuf-compiler
+
+# macOS
+brew install protobuf
+
+# Arch Linux
+sudo pacman -S protobuf
+```
 
 ## Architecture
 
@@ -141,7 +171,8 @@ cargo run --example submit_job -- --addr "http://127.0.0.1:50051" status --job-i
 
 - `SubmitJob(command)` - Submit a new job
 - `GetJobStatus(job_id)` - Get status of a job
-- `ListJobs()` - List all jobs
+- `ListJobs()` - List all jobs (paginated)
+- `StreamJobs()` - Stream all jobs (memory-efficient for large lists)
 - `GetClusterStatus()` - Get cluster information
 
 **RaftService** (Internal):
@@ -165,6 +196,88 @@ cargo run --example submit_job -- --addr "http://127.0.0.1:50051" status --job-i
 | `--port` | 50051 | gRPC server port |
 | `--dashboard-port` | - | Web dashboard port (optional) |
 | `--peers` | "" | Peer addresses (format: "id:host:port,...") |
+| `--sandbox` | false | Enable Docker sandboxing for job execution |
+| `--sandbox-image` | alpine:latest | Docker image for sandboxed execution |
+
+## Sandboxing
+
+By default, jobs run directly on the host machine. With sandboxing enabled, jobs execute inside isolated Docker containers for improved security.
+
+### Why Use Sandboxing?
+
+Without sandboxing, submitted commands run with the same privileges as the nomad-lite process and can access the host filesystem. Sandboxing prevents:
+
+- Filesystem access to host
+- Network access to other services
+- Privilege escalation attacks
+
+### Security Features
+
+When `--sandbox` is enabled, containers run with:
+
+| Feature | Setting | Purpose |
+|---------|---------|---------|
+| Network | `--network=none` | No network access |
+| Capabilities | `--cap-drop=ALL` | All Linux capabilities dropped |
+| Filesystem | `--read-only` | Read-only root filesystem |
+| Privileges | `--security-opt=no-new-privileges` | Prevent privilege escalation |
+| Memory | `--memory=256m` | Memory limit |
+| CPU | `--cpus=0.5` | CPU limit |
+
+### Requirements
+
+Docker must be installed and the user running nomad-lite must have permission to run containers:
+
+```bash
+# Ubuntu/Debian
+sudo apt install docker.io
+sudo usermod -aG docker $USER
+# Log out and back in for group changes to take effect
+
+# macOS
+brew install --cask docker
+```
+
+### Usage
+
+**Single node with sandboxing:**
+
+```bash
+cargo run -- --node-id 1 --port 50051 --dashboard-port 8080 --sandbox
+```
+
+**3-node cluster with sandboxing:**
+
+```bash
+# Terminal 1
+cargo run -- --node-id 1 --port 50051 --dashboard-port 8081 --sandbox \
+  --peers "2:127.0.0.1:50052,3:127.0.0.1:50053"
+
+# Terminal 2
+cargo run -- --node-id 2 --port 50052 --dashboard-port 8082 --sandbox \
+  --peers "1:127.0.0.1:50051,3:127.0.0.1:50053"
+
+# Terminal 3
+cargo run -- --node-id 3 --port 50053 --dashboard-port 8083 --sandbox \
+  --peers "1:127.0.0.1:50051,2:127.0.0.1:50052"
+```
+
+**Custom Docker image:**
+
+```bash
+cargo run -- --node-id 1 --port 50051 --sandbox --sandbox-image ubuntu:22.04
+```
+
+### Submitting Jobs
+
+CLI commands are the same whether sandboxing is enabled or not:
+
+```bash
+cargo run --example submit_job -- --addr "http://127.0.0.1:50051" submit --cmd "echo hello"
+cargo run --example submit_job -- --addr "http://127.0.0.1:50051" submit --cmd "cat /etc/os-release"
+```
+
+**Note:** Available commands depend on the sandbox image. The default `alpine:latest` includes basic utilities. Use a different image if you need specific tools.
 
 ## Raft Implementation Details
 
@@ -238,7 +351,7 @@ cargo run -- --node-id 2 --port 50052 \
 
 ### Critical (Security)
 
-- [ ] **Shell injection vulnerability** - `src/worker/executor.rs` runs arbitrary commands without sanitization. Implement command allowlist or sandboxing.
+- [x] **Shell injection vulnerability** - Added Docker sandboxing with `--sandbox` flag. Jobs run in isolated containers with network disabled, dropped capabilities, and resource limits.
 - [ ] **No authentication** - gRPC and REST endpoints have no auth. Add mTLS or API keys.
 - [ ] **CORS allows all origins** - `src/dashboard/mod.rs` uses permissive CORS. Configure specific origins.
 - [ ] **No input validation** - Commands accepted without validation. Add size limits and validation.
@@ -257,13 +370,9 @@ cargo run -- --node-id 2 --port 50052 \
 - [ ] **No log compaction** - Log grows unbounded. Implement snapshots.
 - [ ] **Job output not replicated** - Only leader has job output.
 
-### Medium Priority (Performance)
-
-- [x] **No connection pooling** - Added client connection pool for request forwarding.
-- [x] **ListJobs allocates Vec** - Added `StreamJobs` gRPC streaming endpoint for large job lists.
-
 ### Completed
 
+- [x] **Docker sandboxing** - Jobs can run in isolated Docker containers with `--sandbox` flag.
 - [x] **Job streaming** - Added `StreamJobs` gRPC streaming endpoint for memory-efficient large job lists.
 - [x] **Connection pooling** - Added client connection pool for request forwarding.
 - [x] **Log cloned on heartbeat** - Now only clones entries needed for replication.

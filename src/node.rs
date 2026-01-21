@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::config::NodeConfig;
+use crate::config::{NodeConfig, SandboxConfig};
 use crate::dashboard::{run_dashboard, DashboardState};
 use crate::grpc::GrpcServer;
 use crate::raft::{Command, RaftNode};
@@ -31,11 +31,11 @@ impl Node {
         let (raft_node, raft_rx) = RaftNode::new(config.clone());
 
         let node = Self {
+            executor: JobExecutor::with_sandbox(config.sandbox.clone()),
             config,
             raft_node: Arc::new(raft_node),
             job_queue: Arc::new(RwLock::new(JobQueue::new())),
             job_assigner: Arc::new(RwLock::new(JobAssigner::new(5000))), // 5s worker timeout
-            executor: JobExecutor::new(),
             dashboard_addr,
         };
 
@@ -82,8 +82,16 @@ impl Node {
         let worker_queue = self.job_queue.clone();
         let worker_assigner = self.job_assigner.clone();
         let node_id = self.config.node_id;
+        let sandbox_config = self.config.sandbox.clone();
         tokio::spawn(async move {
-            Self::worker_loop(node_id, worker_raft, worker_queue, worker_assigner).await;
+            Self::worker_loop(
+                node_id,
+                worker_raft,
+                worker_queue,
+                worker_assigner,
+                sandbox_config,
+            )
+            .await;
         });
 
         // Spawn dashboard server if configured
@@ -207,8 +215,9 @@ impl Node {
         raft_node: Arc<RaftNode>,
         job_queue: Arc<RwLock<JobQueue>>,
         job_assigner: Arc<RwLock<JobAssigner>>,
+        sandbox_config: SandboxConfig,
     ) {
-        let executor = JobExecutor::new();
+        let executor = JobExecutor::with_sandbox(sandbox_config);
         let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
 
         // Register self as worker

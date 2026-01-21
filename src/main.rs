@@ -2,7 +2,7 @@ use clap::Parser;
 use std::net::SocketAddr;
 use tracing_subscriber::EnvFilter;
 
-use nomad_lite::config::{NodeConfig, PeerConfig};
+use nomad_lite::config::{NodeConfig, PeerConfig, SandboxConfig};
 use nomad_lite::node::Node;
 
 #[derive(Parser, Debug)]
@@ -25,6 +25,14 @@ struct Args {
     /// Example: "2:127.0.0.1:50052,3:127.0.0.1:50053"
     #[arg(long, default_value = "")]
     peers: String,
+
+    /// Enable Docker sandboxing for job execution
+    #[arg(long)]
+    sandbox: bool,
+
+    /// Docker image to use for sandboxed execution
+    #[arg(long, default_value = "alpine:latest")]
+    sandbox_image: String,
 }
 
 fn parse_peers(peers_str: &str) -> Vec<PeerConfig> {
@@ -68,6 +76,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let peers = parse_peers(&args.peers);
 
+    let sandbox = SandboxConfig {
+        enabled: args.sandbox,
+        image: args.sandbox_image,
+        ..SandboxConfig::default()
+    };
+
     let config = NodeConfig {
         node_id: args.node_id,
         listen_addr,
@@ -75,6 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         election_timeout_min_ms: 150,
         election_timeout_max_ms: 300,
         heartbeat_interval_ms: 50,
+        sandbox,
     };
 
     tracing::info!(

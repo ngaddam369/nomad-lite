@@ -1,5 +1,32 @@
 use std::net::SocketAddr;
 
+/// Configuration for job execution sandboxing
+#[derive(Debug, Clone)]
+pub struct SandboxConfig {
+    /// Enable Docker-based sandboxing for job execution
+    pub enabled: bool,
+    /// Docker image to use for sandboxed execution
+    pub image: String,
+    /// Disable network access in sandbox
+    pub network_disabled: bool,
+    /// Memory limit (e.g., "256m")
+    pub memory_limit: Option<String>,
+    /// CPU limit (e.g., "0.5" for half a CPU)
+    pub cpu_limit: Option<String>,
+}
+
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            image: "alpine:latest".to_string(),
+            network_disabled: true,
+            memory_limit: Some("256m".to_string()),
+            cpu_limit: Some("0.5".to_string()),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NodeConfig {
     pub node_id: u64,
@@ -8,6 +35,7 @@ pub struct NodeConfig {
     pub election_timeout_min_ms: u64,
     pub election_timeout_max_ms: u64,
     pub heartbeat_interval_ms: u64,
+    pub sandbox: SandboxConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -28,6 +56,7 @@ impl Default for NodeConfig {
             election_timeout_min_ms: 150,
             election_timeout_max_ms: 300,
             heartbeat_interval_ms: 50,
+            sandbox: SandboxConfig::default(),
         }
     }
 }
