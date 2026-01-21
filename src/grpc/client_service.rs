@@ -1,6 +1,8 @@
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Channel;
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
@@ -11,7 +13,7 @@ use crate::proto::scheduler_service_server::SchedulerService;
 use crate::proto::{
     GetClusterStatusRequest, GetClusterStatusResponse, GetJobStatusRequest, GetJobStatusResponse,
     JobInfo, JobStatus as ProtoJobStatus, ListJobsRequest, ListJobsResponse, NodeInfo,
-    SubmitJobRequest, SubmitJobResponse,
+    StreamJobsRequest, SubmitJobRequest, SubmitJobResponse,
 };
 use crate::raft::{Command, RaftNode};
 use crate::scheduler::{Job, JobQueue, JobStatus};
@@ -69,8 +71,12 @@ impl ClientService {
     }
 }
 
+type JobStream = Pin<Box<dyn tokio_stream::Stream<Item = Result<JobInfo, Status>> + Send>>;
+
 #[tonic::async_trait]
 impl SchedulerService for ClientService {
+    type StreamJobsStream = JobStream;
+
     async fn submit_job(
         &self,
         request: Request<SubmitJobRequest>,
@@ -252,6 +258,51 @@ impl SchedulerService for ClientService {
             leader_id: state.leader_id,
             nodes,
         }))
+    }
+
+    async fn stream_jobs(
+        &self,
+        request: Request<StreamJobsRequest>,
+    ) -> Result<Response<Self::StreamJobsStream>, Status> {
+        let req = request.into_inner();
+        let status_filter = ProtoJobStatus::try_from(req.status_filter).ok();
+
+        // Get all jobs from the queue
+        let queue = self.job_queue.read().await;
+        let jobs: Vec<Job> = queue.all_jobs().into_iter().cloned().collect();
+        drop(queue); // Release lock before streaming
+
+        // Create a channel for streaming
+        let (tx, rx) = tokio::sync::mpsc::channel(32);
+
+        // Spawn a task to send jobs through the channel
+        tokio::spawn(async move {
+            for job in jobs {
+                let job_status = status_to_proto(&job.status);
+
+                // Apply status filter if specified
+                if let Some(filter) = status_filter {
+                    if filter != ProtoJobStatus::Unspecified && job_status != filter {
+                        continue;
+                    }
+                }
+
+                let job_info = JobInfo {
+                    job_id: job.id.to_string(),
+                    command: job.command.clone(),
+                    status: job_status as i32,
+                    assigned_worker: job.assigned_worker.unwrap_or(0),
+                };
+
+                if tx.send(Ok(job_info)).await.is_err() {
+                    // Client disconnected
+                    break;
+                }
+            }
+        });
+
+        let stream = ReceiverStream::new(rx);
+        Ok(Response::new(Box::pin(stream) as Self::StreamJobsStream))
     }
 }
 

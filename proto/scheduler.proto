@@ -79,8 +79,11 @@ service SchedulerService {
     // Get status of a job
     rpc GetJobStatus(GetJobStatusRequest) returns (GetJobStatusResponse);
 
-    // List all jobs
+    // List all jobs (paginated, returns all at once)
     rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
+
+    // Stream all jobs (memory-efficient for large job lists)
+    rpc StreamJobs(StreamJobsRequest) returns (stream JobInfo);
 
     // Get cluster status (leader, nodes, etc.)
     rpc GetClusterStatus(GetClusterStatusRequest) returns (GetClusterStatusResponse);
@@ -112,6 +115,11 @@ message ListJobsRequest {
     uint32 page_size = 1;
     // Page token from previous response for pagination
     string page_token = 2;
+}
+
+message StreamJobsRequest {
+    // Optional filter by status (if unspecified, returns all jobs)
+    JobStatus status_filter = 1;
 }
 
 message ListJobsResponse {

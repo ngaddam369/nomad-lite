@@ -126,6 +126,9 @@ cargo run --example submit_job -- --addr "http://127.0.0.1:50051" submit --cmd "
 # List all jobs
 cargo run --example submit_job -- --addr "http://127.0.0.1:50051" list
 
+# List all jobs using streaming (memory-efficient for large lists)
+cargo run --example submit_job -- --addr "http://127.0.0.1:50051" list --stream
+
 # Get job status
 cargo run --example submit_job -- --addr "http://127.0.0.1:50051" status --job-id <JOB_ID>
 ```
@@ -257,10 +260,11 @@ cargo run -- --node-id 2 --port 50052 \
 ### Medium Priority (Performance)
 
 - [x] **No connection pooling** - Added client connection pool for request forwarding.
-- [ ] **ListJobs allocates Vec** - Should use gRPC streaming for large job lists.
+- [x] **ListJobs allocates Vec** - Added `StreamJobs` gRPC streaming endpoint for large job lists.
 
 ### Completed
 
+- [x] **Job streaming** - Added `StreamJobs` gRPC streaming endpoint for memory-efficient large job lists.
 - [x] **Connection pooling** - Added client connection pool for request forwarding.
 - [x] **Log cloned on heartbeat** - Now only clones entries needed for replication.
 - [x] **Unbounded job queue** - Added configurable max capacity (10,000) and cleanup.

@@ -1,8 +1,10 @@
 use clap::Parser;
 use nomad_lite::proto::scheduler_service_client::SchedulerServiceClient;
 use nomad_lite::proto::{
-    GetClusterStatusRequest, GetJobStatusRequest, ListJobsRequest, SubmitJobRequest,
+    GetClusterStatusRequest, GetJobStatusRequest, ListJobsRequest, StreamJobsRequest,
+    SubmitJobRequest,
 };
+use tokio_stream::StreamExt;
 
 #[derive(Parser, Debug)]
 #[command(name = "submit-job")]
@@ -31,7 +33,11 @@ enum Commands {
         job_id: String,
     },
     /// List all jobs
-    List,
+    List {
+        /// Use streaming API (more efficient for large job lists)
+        #[arg(short, long)]
+        stream: bool,
+    },
     /// Get cluster status
     Cluster,
 }
@@ -82,43 +88,80 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Assigned Worker: {}", response.assigned_worker);
             }
         }
-        Commands::List => {
-            let response = client
-                .list_jobs(ListJobsRequest {
-                    page_size: 100,
-                    page_token: String::new(),
-                })
-                .await?
-                .into_inner();
+        Commands::List { stream } => {
+            println!(
+                "{:<40} {:<15} {:<10} {}",
+                "JOB ID", "STATUS", "WORKER", "COMMAND"
+            );
+            println!("{}", "-".repeat(80));
 
-            if response.jobs.is_empty() {
-                println!("No jobs found.");
-            } else {
-                println!("Total jobs: {}", response.total_count);
-                println!();
-                println!(
-                    "{:<40} {:<15} {:<10} {}",
-                    "JOB ID", "STATUS", "WORKER", "COMMAND"
-                );
-                println!("{}", "-".repeat(80));
-                for job in response.jobs {
-                    let status = nomad_lite::proto::JobStatus::try_from(job.status)
-                        .unwrap_or(nomad_lite::proto::JobStatus::Unspecified);
-                    println!(
-                        "{:<40} {:<15} {:<10} {}",
-                        job.job_id,
-                        format!("{:?}", status),
-                        if job.assigned_worker > 0 {
-                            job.assigned_worker.to_string()
-                        } else {
-                            "-".to_string()
-                        },
-                        job.command
-                    );
+            if stream {
+                // Use streaming API for efficient memory usage
+                let mut stream = client
+                    .stream_jobs(StreamJobsRequest { status_filter: 0 })
+                    .await?
+                    .into_inner();
+
+                let mut count = 0;
+                while let Some(result) = stream.next().await {
+                    match result {
+                        Ok(job) => {
+                            count += 1;
+                            let status = nomad_lite::proto::JobStatus::try_from(job.status)
+                                .unwrap_or(nomad_lite::proto::JobStatus::Unspecified);
+                            println!(
+                                "{:<40} {:<15} {:<10} {}",
+                                job.job_id,
+                                format!("{:?}", status),
+                                if job.assigned_worker > 0 {
+                                    job.assigned_worker.to_string()
+                                } else {
+                                    "-".to_string()
+                                },
+                                job.command
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("Stream error: {}", e);
+                            break;
+                        }
+                    }
                 }
-                if !response.next_page_token.is_empty() {
+                println!();
+                println!("Total jobs: {}", count);
+            } else {
+                // Use paginated API
+                let response = client
+                    .list_jobs(ListJobsRequest {
+                        page_size: 100,
+                        page_token: String::new(),
+                    })
+                    .await?
+                    .into_inner();
+
+                if response.jobs.is_empty() {
+                    println!("No jobs found.");
+                } else {
+                    for job in response.jobs {
+                        let status = nomad_lite::proto::JobStatus::try_from(job.status)
+                            .unwrap_or(nomad_lite::proto::JobStatus::Unspecified);
+                        println!(
+                            "{:<40} {:<15} {:<10} {}",
+                            job.job_id,
+                            format!("{:?}", status),
+                            if job.assigned_worker > 0 {
+                                job.assigned_worker.to_string()
+                            } else {
+                                "-".to_string()
+                            },
+                            job.command
+                        );
+                    }
                     println!();
-                    println!("(More results available)");
+                    println!("Total jobs: {}", response.total_count);
+                    if !response.next_page_token.is_empty() {
+                        println!("(More results available)");
+                    }
                 }
             }
         }
