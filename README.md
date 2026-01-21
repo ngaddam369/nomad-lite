@@ -1,4 +1,4 @@
-# nomad-lite ![CI](https://github.com/ngaddam369/nomad-lite/actions/workflows/ci.yml/badge.svg)
+# nomad-lite ![CI](https://github.com/ngaddam369/nomad-lite/actions/workflows/ci.yml/badge.svg) [![codecov](https://codecov.io/gh/ngaddam369/nomad-lite/graph/badge.svg)](https://codecov.io/gh/ngaddam369/nomad-lite)
 
 This project implements a distributed job scheduler similar to Nomad, Kubernetes scheduler, or Apache Airflow.
 The Jobs are simple shell commands like `echo hello`, `sleep 5` etc.
