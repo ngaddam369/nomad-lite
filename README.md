@@ -256,11 +256,12 @@ cargo run -- --node-id 2 --port 50052 \
 
 ### Medium Priority (Performance)
 
-- [ ] **No connection pooling** - Creates new gRPC client per peer request.
+- [x] **No connection pooling** - Added client connection pool for request forwarding.
 - [ ] **ListJobs allocates Vec** - Should use gRPC streaming for large job lists.
 
 ### Completed
 
+- [x] **Connection pooling** - Added client connection pool for request forwarding.
 - [x] **Log cloned on heartbeat** - Now only clones entries needed for replication.
 - [x] **Unbounded job queue** - Added configurable max capacity (10,000) and cleanup.
 - [x] **Polling loops** - Scheduler now uses event-driven commit notifications.

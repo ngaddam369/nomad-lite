@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
+use tonic::transport::Channel;
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
@@ -19,6 +21,8 @@ pub struct ClientService {
     config: NodeConfig,
     raft_node: Arc<RaftNode>,
     job_queue: Arc<RwLock<JobQueue>>,
+    /// Connection pool for forwarding requests to other nodes
+    client_pool: Arc<Mutex<HashMap<u64, SchedulerServiceClient<Channel>>>>,
 }
 
 impl ClientService {
@@ -31,7 +35,37 @@ impl ClientService {
             config,
             raft_node,
             job_queue,
+            client_pool: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Get or create a cached connection to a peer node
+    async fn get_client(&self, node_id: u64) -> Result<SchedulerServiceClient<Channel>, Status> {
+        let mut pool = self.client_pool.lock().await;
+
+        // Return cached client if available
+        if let Some(client) = pool.get(&node_id) {
+            return Ok(client.clone());
+        }
+
+        // Find peer address
+        let peer_addr = self
+            .config
+            .peers
+            .iter()
+            .find(|p| p.node_id == node_id)
+            .map(|p| p.addr.clone())
+            .ok_or_else(|| Status::not_found(format!("Unknown node {}", node_id)))?;
+
+        // Create new connection
+        let client = SchedulerServiceClient::connect(format!("http://{}", peer_addr))
+            .await
+            .map_err(|e| {
+                Status::unavailable(format!("Failed to connect to node {}: {}", node_id, e))
+            })?;
+
+        pool.insert(node_id, client.clone());
+        Ok(client)
     }
 }
 
@@ -226,24 +260,13 @@ impl ClientService {
     async fn forward_cluster_status_to_leader(
         &self,
     ) -> Result<Response<GetClusterStatusResponse>, Status> {
-        let leader_id = self.raft_node.get_leader_id().await;
-
-        let leader_addr = match leader_id {
-            Some(id) => self
-                .config
-                .peers
-                .iter()
-                .find(|p| p.node_id == id)
-                .map(|p| p.addr.clone()),
-            None => None,
-        };
-
-        let addr =
-            leader_addr.ok_or_else(|| Status::unavailable("Leader unknown, please retry later"))?;
-
-        let mut client = SchedulerServiceClient::connect(format!("http://{}", addr))
+        let leader_id = self
+            .raft_node
+            .get_leader_id()
             .await
-            .map_err(|e| Status::unavailable(format!("Failed to connect to leader: {}", e)))?;
+            .ok_or_else(|| Status::unavailable("Leader unknown, please retry later"))?;
+
+        let mut client = self.get_client(leader_id).await?;
 
         let response = client
             .get_cluster_status(GetClusterStatusRequest {})
