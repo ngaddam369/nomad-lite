@@ -18,7 +18,7 @@ The Jobs are simple shell commands like `echo hello`, `sleep 5` etc.
 |------------|---------|----------|-------|
 | Rust | 1.56+ | Yes | 2021 edition |
 | protoc | 3.0+ | Yes | Protocol Buffers compiler for gRPC |
-| Docker | 20.0+ | No | Only for sandboxing (see [Sandboxing](#sandboxing)) |
+| Docker | 20.0+ | No | For [Docker Compose](#docker) or [Sandboxing](#sandboxing) |
 
 ### Installing Dependencies
 
@@ -125,23 +125,6 @@ Terminal 3:
 ```bash
 cargo run -- --node-id 3 --port 50053 --dashboard-port 8083 \
   --peers "1:127.0.0.1:50051,2:127.0.0.1:50052"
-```
-
-### Docker Compose
-
-```bash
-# Start a 3-node cluster
-docker-compose up --build
-
-# Dashboards:
-# - http://localhost:8081 (Node 1)
-# - http://localhost:8082 (Node 2)
-# - http://localhost:8083 (Node 3)
-
-# gRPC endpoints:
-# - localhost:50051 (Node 1)
-# - localhost:50052 (Node 2)
-# - localhost:50053 (Node 3)
 ```
 
 ## CLI Client
@@ -278,6 +261,84 @@ cargo run --example submit_job -- --addr "http://127.0.0.1:50051" submit --cmd "
 ```
 
 **Note:** Available commands depend on the sandbox image. The default `alpine:latest` includes basic utilities. Use a different image if you need specific tools.
+
+## Docker
+
+### Running with Docker Compose
+
+The easiest way to run a 3-node cluster is using Docker Compose.
+
+**1. Build and start the cluster:**
+
+```bash
+# Foreground (see logs in terminal)
+docker-compose up --build
+
+# Or detached mode (background)
+docker-compose up --build -d
+```
+
+**2. Verify all nodes are running:**
+
+```bash
+docker-compose ps
+```
+
+Expected output:
+```
+NAME          IMAGE              STATUS         PORTS
+nomad-node1   nomad-lite-node1   Up (healthy)   0.0.0.0:50051->50051, 0.0.0.0:8081->8080
+nomad-node2   nomad-lite-node2   Up             0.0.0.0:50052->50051, 0.0.0.0:8082->8080
+nomad-node3   nomad-lite-node3   Up             0.0.0.0:50053->50051, 0.0.0.0:8083->8080
+```
+
+**3. Check cluster status:**
+
+```bash
+# Check each node (one will be "leader", others "follower")
+curl http://localhost:8081/api/cluster
+curl http://localhost:8082/api/cluster
+curl http://localhost:8083/api/cluster
+```
+
+**4. Submit a job (to the leader):**
+
+```bash
+# First find which node is the leader, then submit to that node
+curl -X POST http://localhost:8081/api/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"command": "echo hello from docker"}'
+```
+
+**5. List jobs:**
+
+```bash
+curl http://localhost:8081/api/jobs
+```
+
+**6. View logs:**
+
+```bash
+# All nodes
+docker-compose logs -f
+
+# Specific node
+docker-compose logs -f node1
+```
+
+**7. Stop the cluster:**
+
+```bash
+docker-compose down
+```
+
+### Endpoints
+
+| Node | Dashboard | gRPC |
+|------|-----------|------|
+| Node 1 | http://localhost:8081 | localhost:50051 |
+| Node 2 | http://localhost:8082 | localhost:50052 |
+| Node 3 | http://localhost:8083 | localhost:50053 |
 
 ## Raft Implementation Details
 
