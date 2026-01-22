@@ -80,7 +80,7 @@ jobs:
         run: cargo build --verbose
 
   test-unit:
-    name: Test / unit
+    name: test-unit
     needs: build
     runs-on: ubuntu-latest
 
@@ -114,7 +114,7 @@ jobs:
           cargo test --test executor_tests --verbose
 
   test-integration:
-    name: Test / integration
+    name: test-integration
     needs: test-unit
     runs-on: ubuntu-latest
 
@@ -141,19 +141,42 @@ jobs:
       - name: Run integration tests
         run: cargo test --test integration_tests --verbose -- --test-threads=1
 
-  # Future test stages (run sequentially after integration):
-  # test-failover:
-  #   name: Test / failover
-  #   needs: test-integration
-  #   ...
-  #
+  test-failover:
+    name: test-failover
+    needs: test-integration
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run failover tests
+        run: cargo test --test failover_tests --verbose -- --test-threads=1
+
+  # Future test stage (run sequentially after failover):
   # test-partition:
-  #   name: Test / partition
+  #   name: test-partition
   #   needs: test-failover
   #   ...
 
   coverage:
-    needs: test-integration
+    needs: test-failover
     runs-on: ubuntu-latest
 
     steps:

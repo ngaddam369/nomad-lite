@@ -47,10 +47,9 @@ pub struct TestNode {
     pub port: u16,
     pub raft_node: Arc<RaftNode>,
     pub job_queue: Arc<RwLock<JobQueue>>,
-    _shutdown_tx: Option<oneshot::Sender<()>>,
-    _raft_handle: JoinHandle<()>,
-    _grpc_handle: JoinHandle<()>,
-    _scheduler_handle: JoinHandle<()>,
+    raft_handle: JoinHandle<()>,
+    grpc_handle: JoinHandle<()>,
+    scheduler_handle: JoinHandle<()>,
 }
 
 impl TestNode {
@@ -61,7 +60,6 @@ impl TestNode {
     }
 
     /// Get the current term
-    #[allow(dead_code)]
     pub async fn current_term(&self) -> u64 {
         self.raft_node.state.read().await.current_term
     }
@@ -72,8 +70,18 @@ impl TestNode {
     }
 
     /// Get the known leader ID
+    #[allow(dead_code)]
     pub async fn leader_id(&self) -> Option<u64> {
         self.raft_node.state.read().await.leader_id
+    }
+}
+
+impl Drop for TestNode {
+    fn drop(&mut self) {
+        // Abort all tasks to ensure clean shutdown
+        self.raft_handle.abort();
+        self.grpc_handle.abort();
+        self.scheduler_handle.abort();
     }
 }
 
@@ -163,10 +171,9 @@ impl TestCluster {
             port,
             raft_node,
             job_queue,
-            _shutdown_tx: None,
-            _raft_handle: raft_handle,
-            _grpc_handle: grpc_handle,
-            _scheduler_handle: scheduler_handle,
+            raft_handle,
+            grpc_handle,
+            scheduler_handle,
         }
     }
 
@@ -315,6 +322,84 @@ impl TestCluster {
             }
         }
         count
+    }
+
+    /// Shutdown a specific node (simulates crash)
+    pub fn shutdown_node(&mut self, node_id: u64) -> bool {
+        // Removing the node will drop it, aborting all its tasks
+        self.nodes.remove(&node_id).is_some()
+    }
+
+    /// Get IDs of all active nodes
+    pub fn active_node_ids(&self) -> Vec<u64> {
+        self.nodes.keys().copied().collect()
+    }
+
+    /// Wait for a new leader among remaining nodes (excluding a specific node)
+    pub async fn wait_for_new_leader(
+        &self,
+        excluded_node: u64,
+        timeout_duration: Duration,
+    ) -> Option<u64> {
+        let result = wait_for(
+            || async {
+                for (node_id, node) in self.nodes.iter() {
+                    if *node_id != excluded_node && node.is_leader().await {
+                        return true;
+                    }
+                }
+                false
+            },
+            timeout_duration,
+            Duration::from_millis(50),
+        )
+        .await;
+
+        if result {
+            for (node_id, node) in self.nodes.iter() {
+                if *node_id != excluded_node && node.is_leader().await {
+                    return Some(*node_id);
+                }
+            }
+        }
+        None
+    }
+
+    /// Wait for commit on remaining nodes (excluding shutdown nodes)
+    pub async fn wait_for_commit_on_remaining(
+        &self,
+        min_commits: usize,
+        timeout_duration: Duration,
+    ) -> bool {
+        wait_for(
+            || async {
+                for node in self.nodes.values() {
+                    let log_len = node.log_len().await;
+                    if log_len < min_commits {
+                        return false;
+                    }
+                }
+                true
+            },
+            timeout_duration,
+            Duration::from_millis(50),
+        )
+        .await
+    }
+
+    /// Verify log consistency among remaining nodes
+    pub async fn verify_log_consistency_remaining(&self) -> bool {
+        if self.nodes.len() < 2 {
+            return true;
+        }
+
+        let mut log_lengths = Vec::new();
+        for node in self.nodes.values() {
+            log_lengths.push(node.log_len().await);
+        }
+
+        let first_len = log_lengths[0];
+        log_lengths.iter().all(|&len| len == first_len)
     }
 
     /// Shutdown all nodes (best effort cleanup)

@@ -256,6 +256,7 @@ docker-compose ps
 ```
 
 Expected output:
+
 ```
 NAME          IMAGE              STATUS         PORTS
 nomad-node1   nomad-lite-node1   Up (healthy)   0.0.0.0:50051->50051, 0.0.0.0:8081->8080
@@ -307,9 +308,9 @@ docker-compose down
 
 | Node | Dashboard | gRPC |
 |------|-----------|------|
-| Node 1 | http://localhost:8081 | localhost:50051 |
-| Node 2 | http://localhost:8082 | localhost:50052 |
-| Node 3 | http://localhost:8083 | localhost:50053 |
+| Node 1 | <http://localhost:8081> | localhost:50051 |
+| Node 2 | <http://localhost:8082> | localhost:50052 |
+| Node 3 | <http://localhost:8083> | localhost:50053 |
 
 ## Raft Implementation Details
 
@@ -392,8 +393,8 @@ cargo run -- --node-id 2 --port 50052 \
 
 ### High Priority (Testing)
 
-- [ ] **No integration tests** - Add tests for multi-node cluster operations.
-- [ ] **No failover tests** - Add tests for leader failure and election.
+- [x] **No integration tests** - Add tests for multi-node cluster operations.
+- [x] **No failover tests** - Added 8 tests for leader failure, election, and quorum loss scenarios.
 - [ ] **No partition tests** - Add tests for network partition recovery.
 
 ### High Priority (Technical Debt)
