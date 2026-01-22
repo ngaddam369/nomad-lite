@@ -1,0 +1,36 @@
+name: 'Rust Setup'
+description: 'Common setup for Rust CI jobs: toolchain, protobuf, and caching'
+
+inputs:
+  components:
+    description: 'Rust components to install (e.g., rustfmt, clippy)'
+    required: false
+    default: ''
+  skip-protobuf:
+    description: 'Skip protobuf compiler installation'
+    required: false
+    default: 'false'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: ${{ inputs.components }}
+
+    - name: Install protobuf compiler
+      if: inputs.skip-protobuf != 'true'
+      shell: bash
+      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
