@@ -147,11 +147,7 @@ async fn test_log_persistence_across_leader_changes() {
         );
 
         let queue = new_leader.job_queue.read().await;
-        assert_eq!(
-            queue.len(),
-            5,
-            "All 5 jobs should be in new leader's queue"
-        );
+        assert_eq!(queue.len(), 5, "All 5 jobs should be in new leader's queue");
     }
 
     cluster.shutdown().await;
@@ -369,7 +365,11 @@ async fn test_quorum_loss_prevents_commits() {
 
         // Verify the job is still in the queue
         let queue = remaining_node.job_queue.read().await;
-        assert_eq!(queue.len(), 1, "Queue should have 1 job from before quorum loss");
+        assert_eq!(
+            queue.len(),
+            1,
+            "Queue should have 1 job from before quorum loss"
+        );
     }
 
     cluster.shutdown().await;
