@@ -26,13 +26,9 @@ struct Args {
     #[arg(long, default_value = "")]
     peers: String,
 
-    /// Enable Docker sandboxing for job execution
-    #[arg(long)]
-    sandbox: bool,
-
-    /// Docker image to use for sandboxed execution
+    /// Docker image to use for job execution
     #[arg(long, default_value = "alpine:latest")]
-    sandbox_image: String,
+    image: String,
 }
 
 fn parse_peers(peers_str: &str) -> Vec<PeerConfig> {
@@ -77,8 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let peers = parse_peers(&args.peers);
 
     let sandbox = SandboxConfig {
-        enabled: args.sandbox,
-        image: args.sandbox_image,
+        image: args.image,
         ..SandboxConfig::default()
     };
 

@@ -1,13 +1,13 @@
 use std::net::SocketAddr;
 
-/// Configuration for job execution sandboxing
+/// Configuration for Docker-based job execution.
+///
+/// All jobs run in sandboxed Docker containers for security.
 #[derive(Debug, Clone)]
 pub struct SandboxConfig {
-    /// Enable Docker-based sandboxing for job execution
-    pub enabled: bool,
-    /// Docker image to use for sandboxed execution
+    /// Docker image to use for job execution
     pub image: String,
-    /// Disable network access in sandbox
+    /// Disable network access in container
     pub network_disabled: bool,
     /// Memory limit (e.g., "256m")
     pub memory_limit: Option<String>,
@@ -18,7 +18,6 @@ pub struct SandboxConfig {
 impl Default for SandboxConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
             image: "alpine:latest".to_string(),
             network_disabled: true,
             memory_limit: Some("256m".to_string()),

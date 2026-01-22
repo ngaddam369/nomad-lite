@@ -31,7 +31,7 @@ impl Node {
         let (raft_node, raft_rx) = RaftNode::new(config.clone());
 
         let node = Self {
-            executor: JobExecutor::with_sandbox(config.sandbox.clone()),
+            executor: JobExecutor::new(config.sandbox.clone()),
             config,
             raft_node: Arc::new(raft_node),
             job_queue: Arc::new(RwLock::new(JobQueue::new())),
@@ -217,7 +217,7 @@ impl Node {
         job_assigner: Arc<RwLock<JobAssigner>>,
         sandbox_config: SandboxConfig,
     ) {
-        let executor = JobExecutor::with_sandbox(sandbox_config);
+        let executor = JobExecutor::new(sandbox_config);
         let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
 
         // Register self as worker

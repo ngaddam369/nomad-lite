@@ -1,10 +1,16 @@
+use nomad_lite::config::SandboxConfig;
 use nomad_lite::scheduler::JobStatus;
 use nomad_lite::worker::JobExecutor;
 use uuid::Uuid;
 
+/// Create a test executor with default sandbox config
+fn test_executor() -> JobExecutor {
+    JobExecutor::new(SandboxConfig::default())
+}
+
 #[tokio::test]
 async fn test_execute_simple_command() {
-    let executor = JobExecutor::new();
+    let executor = test_executor();
     let job_id = Uuid::new_v4();
 
     let result = executor.execute(job_id, "echo hello").await;
@@ -17,7 +23,7 @@ async fn test_execute_simple_command() {
 
 #[tokio::test]
 async fn test_execute_empty_output() {
-    let executor = JobExecutor::new();
+    let executor = test_executor();
     let job_id = Uuid::new_v4();
 
     // Command that produces no output
@@ -31,7 +37,7 @@ async fn test_execute_empty_output() {
 
 #[tokio::test]
 async fn test_execute_large_output() {
-    let executor = JobExecutor::new();
+    let executor = test_executor();
     let job_id = Uuid::new_v4();
 
     // Generate large output (1000 lines)
@@ -48,7 +54,7 @@ async fn test_execute_large_output() {
 
 #[tokio::test]
 async fn test_execute_command_failure() {
-    let executor = JobExecutor::new();
+    let executor = test_executor();
     let job_id = Uuid::new_v4();
 
     // Command that exits with non-zero status
@@ -61,7 +67,7 @@ async fn test_execute_command_failure() {
 
 #[tokio::test]
 async fn test_execute_command_with_stderr() {
-    let executor = JobExecutor::new();
+    let executor = test_executor();
     let job_id = Uuid::new_v4();
 
     // Command that writes to stderr and fails
@@ -77,7 +83,7 @@ async fn test_execute_command_with_stderr() {
 
 #[tokio::test]
 async fn test_execute_invalid_command() {
-    let executor = JobExecutor::new();
+    let executor = test_executor();
     let job_id = Uuid::new_v4();
 
     // Command that doesn't exist
@@ -90,7 +96,7 @@ async fn test_execute_invalid_command() {
 
 #[tokio::test]
 async fn test_execute_multiline_output() {
-    let executor = JobExecutor::new();
+    let executor = test_executor();
     let job_id = Uuid::new_v4();
 
     let result = executor
@@ -107,7 +113,7 @@ async fn test_execute_multiline_output() {
 
 #[tokio::test]
 async fn test_execute_with_special_characters() {
-    let executor = JobExecutor::new();
+    let executor = test_executor();
     let job_id = Uuid::new_v4();
 
     // Command with special characters
@@ -121,7 +127,7 @@ async fn test_execute_with_special_characters() {
 
 #[tokio::test]
 async fn test_execute_piped_commands() {
-    let executor = JobExecutor::new();
+    let executor = test_executor();
     let job_id = Uuid::new_v4();
 
     let result = executor.execute(job_id, "echo 'hello world' | wc -w").await;
