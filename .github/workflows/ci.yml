@@ -82,14 +82,19 @@ jobs:
       - name: Run failover tests
         run: cargo test --test failover_tests --verbose -- --test-threads=1
 
-  # Future test stage (run sequentially after failover):
-  # test-partition:
-  #   name: test-partition
-  #   needs: test-failover
-  #   ...
+  test-partition:
+    name: test-partition
+    needs: test-failover
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/rust-setup
+
+      - name: Run partition tests
+        run: cargo test --test partition_tests --verbose -- --test-threads=1
 
   coverage:
-    needs: test-failover
+    needs: test-partition
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

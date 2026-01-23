@@ -395,7 +395,7 @@ cargo run -- --node-id 2 --port 50052 \
 
 - [x] **No integration tests** - Add tests for multi-node cluster operations.
 - [x] **No failover tests** - Added 8 tests for leader failure, election, and quorum loss scenarios.
-- [ ] **No partition tests** - Add tests for network partition recovery.
+- [x] **No partition tests** - Added 7 tests for network partition and recovery scenarios.
 
 ### High Priority (Technical Debt)
 

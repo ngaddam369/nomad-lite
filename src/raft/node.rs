@@ -34,6 +34,8 @@ pub struct RaftNode {
     pub state: Arc<RwLock<RaftState>>,
     config: NodeConfig,
     peers: Arc<Mutex<HashMap<u64, RaftServiceClient<Channel>>>>,
+    /// Peers temporarily disconnected to simulate network partitions (for testing)
+    disconnected_peers: Arc<Mutex<HashMap<u64, RaftServiceClient<Channel>>>>,
     message_tx: mpsc::Sender<RaftMessage>,
     last_heartbeat: Arc<RwLock<Instant>>,
     commit_notify_tx: watch::Sender<u64>,
@@ -52,6 +54,7 @@ impl RaftNode {
             state: Arc::new(RwLock::new(RaftState::new())),
             config,
             peers: Arc::new(Mutex::new(HashMap::new())),
+            disconnected_peers: Arc::new(Mutex::new(HashMap::new())),
             message_tx,
             last_heartbeat: Arc::new(RwLock::new(Instant::now())),
             commit_notify_tx,
@@ -109,6 +112,44 @@ impl RaftNode {
                     );
                 }
             }
+        }
+    }
+
+    /// Simulate disconnecting from a specific peer (moves client to disconnected_peers).
+    /// Used for network partition testing.
+    pub async fn disconnect_peer(&self, peer_id: u64) {
+        let mut peers = self.peers.lock().await;
+        let mut disconnected = self.disconnected_peers.lock().await;
+        if let Some(client) = peers.remove(&peer_id) {
+            disconnected.insert(peer_id, client);
+        }
+    }
+
+    /// Reconnect a previously disconnected peer.
+    /// Used for network partition healing in tests.
+    pub async fn reconnect_peer(&self, peer_id: u64) {
+        let mut peers = self.peers.lock().await;
+        let mut disconnected = self.disconnected_peers.lock().await;
+        if let Some(client) = disconnected.remove(&peer_id) {
+            peers.insert(peer_id, client);
+        }
+    }
+
+    /// Disconnect from all peers (full isolation).
+    pub async fn disconnect_all_peers(&self) {
+        let mut peers = self.peers.lock().await;
+        let mut disconnected = self.disconnected_peers.lock().await;
+        for (id, client) in peers.drain() {
+            disconnected.insert(id, client);
+        }
+    }
+
+    /// Reconnect all previously disconnected peers.
+    pub async fn reconnect_all_peers(&self) {
+        let mut peers = self.peers.lock().await;
+        let mut disconnected = self.disconnected_peers.lock().await;
+        for (id, client) in disconnected.drain() {
+            peers.insert(id, client);
         }
     }
 

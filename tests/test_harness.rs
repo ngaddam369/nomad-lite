@@ -387,6 +387,148 @@ impl TestCluster {
         .await
     }
 
+    /// Create a network partition: group_a can't communicate with group_b and vice versa
+    pub async fn create_partition(&self, group_a: &[u64], group_b: &[u64]) {
+        for &node_a in group_a {
+            if let Some(node) = self.nodes.get(&node_a) {
+                for &node_b in group_b {
+                    node.raft_node.disconnect_peer(node_b).await;
+                }
+            }
+        }
+        for &node_b in group_b {
+            if let Some(node) = self.nodes.get(&node_b) {
+                for &node_a in group_a {
+                    node.raft_node.disconnect_peer(node_a).await;
+                }
+            }
+        }
+    }
+
+    /// Heal a network partition: restore communication between groups
+    pub async fn heal_partition(&self, group_a: &[u64], group_b: &[u64]) {
+        for &node_a in group_a {
+            if let Some(node) = self.nodes.get(&node_a) {
+                for &node_b in group_b {
+                    node.raft_node.reconnect_peer(node_b).await;
+                }
+            }
+        }
+        for &node_b in group_b {
+            if let Some(node) = self.nodes.get(&node_b) {
+                for &node_a in group_a {
+                    node.raft_node.reconnect_peer(node_a).await;
+                }
+            }
+        }
+    }
+
+    /// Isolate a node from all other nodes
+    pub async fn isolate_node(&self, node_id: u64) {
+        let other_ids: Vec<u64> = self
+            .nodes
+            .keys()
+            .filter(|&&id| id != node_id)
+            .copied()
+            .collect();
+        self.create_partition(&[node_id], &other_ids).await;
+    }
+
+    /// Heal an isolated node (reconnect to all others)
+    pub async fn heal_node(&self, node_id: u64) {
+        let other_ids: Vec<u64> = self
+            .nodes
+            .keys()
+            .filter(|&&id| id != node_id)
+            .copied()
+            .collect();
+        self.heal_partition(&[node_id], &other_ids).await;
+    }
+
+    /// Wait for a leader to emerge within a specific group of nodes
+    pub async fn wait_for_leader_in_group(
+        &self,
+        group: &[u64],
+        timeout_duration: Duration,
+    ) -> Option<u64> {
+        let result = wait_for(
+            || async {
+                for &node_id in group {
+                    if let Some(node) = self.nodes.get(&node_id) {
+                        if node.is_leader().await {
+                            return true;
+                        }
+                    }
+                }
+                false
+            },
+            timeout_duration,
+            Duration::from_millis(50),
+        )
+        .await;
+
+        if result {
+            for &node_id in group {
+                if let Some(node) = self.nodes.get(&node_id) {
+                    if node.is_leader().await {
+                        return Some(node_id);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Submit a job directly to a specific node (must be leader)
+    pub async fn submit_job_to_node(&self, node_id: u64, command: &str) -> Result<Uuid, String> {
+        let node = self.nodes.get(&node_id).ok_or("Node not found")?;
+
+        let job_id = Uuid::new_v4();
+        let (tx, rx) = oneshot::channel();
+
+        node.raft_node
+            .message_sender()
+            .send(RaftMessage::AppendCommand {
+                command: Command::SubmitJob {
+                    job_id,
+                    command: command.to_string(),
+                },
+                response_tx: tx,
+            })
+            .await
+            .map_err(|e| format!("Failed to send command: {}", e))?;
+
+        rx.await
+            .map_err(|e| format!("Failed to receive response: {}", e))?
+            .map(|_| job_id)
+    }
+
+    /// Wait for a specific commit count on a specific set of nodes
+    pub async fn wait_for_commit_on_nodes(
+        &self,
+        node_ids: &[u64],
+        min_commits: usize,
+        timeout_duration: Duration,
+    ) -> bool {
+        wait_for(
+            || async {
+                for &node_id in node_ids {
+                    if let Some(node) = self.nodes.get(&node_id) {
+                        if node.log_len().await < min_commits {
+                            return false;
+                        }
+                    } else {
+                        return false;
+                    }
+                }
+                true
+            },
+            timeout_duration,
+            Duration::from_millis(50),
+        )
+        .await
+    }
+
     /// Verify log consistency among remaining nodes
     pub async fn verify_log_consistency_remaining(&self) -> bool {
         if self.nodes.len() < 2 {
