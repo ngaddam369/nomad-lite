@@ -162,6 +162,7 @@ impl SchedulerService for ClientService {
         let command = Command::SubmitJob {
             job_id,
             command: req.command,
+            created_at: job.created_at,
         };
 
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -180,14 +181,16 @@ impl SchedulerService for ClientService {
 
         match rx.await {
             Ok(Ok(_index)) => {
+                let created_at_ms = job.created_at.timestamp_millis();
                 // Add job to queue
                 if !self.job_queue.write().await.add_job(job) {
                     return Err(Status::resource_exhausted("Job queue is at capacity"));
                 }
 
-                tracing::info!(job_id = %job_id, "Job submitted");
+                tracing::info!(job_id = %job_id, created_at_ms, "Job submitted");
                 Ok(Response::new(SubmitJobResponse {
                     job_id: job_id.to_string(),
+                    created_at_ms,
                 }))
             }
             Ok(Err(e)) => Err(Status::internal(format!("Raft error: {}", e))),
@@ -218,6 +221,8 @@ impl SchedulerService for ClientService {
             assigned_worker: job.assigned_worker.unwrap_or(0),
             executed_by: job.executed_by.unwrap_or(0),
             exit_code: job.exit_code,
+            created_at_ms: job.created_at.timestamp_millis(),
+            completed_at_ms: job.completed_at.map(|dt| dt.timestamp_millis()),
         };
 
         // If this node executed the job, we have the output locally
@@ -280,6 +285,8 @@ impl SchedulerService for ClientService {
                 command: job.command.clone(),
                 status: status_to_proto(&job.status) as i32,
                 assigned_worker: job.assigned_worker.unwrap_or(0),
+                created_at_ms: job.created_at.timestamp_millis(),
+                completed_at_ms: job.completed_at.map(|dt| dt.timestamp_millis()),
             })
             .collect();
 
@@ -375,6 +382,8 @@ impl SchedulerService for ClientService {
                     command: job.command.clone(),
                     status: job_status as i32,
                     assigned_worker: job.assigned_worker.unwrap_or(0),
+                    created_at_ms: job.created_at.timestamp_millis(),
+                    completed_at_ms: job.completed_at.map(|dt| dt.timestamp_millis()),
                 };
 
                 if tx.send(Ok(job_info)).await.is_err() {

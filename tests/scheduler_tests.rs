@@ -1,3 +1,4 @@
+use chrono::Utc;
 use nomad_lite::raft::state::Command;
 use nomad_lite::scheduler::assigner::JobAssigner;
 use nomad_lite::scheduler::job::{Job, JobStatus};
@@ -159,18 +160,25 @@ fn test_apply_committed_entries_to_queue() {
         Command::SubmitJob {
             job_id: job_id_1,
             command: "echo first".to_string(),
+            created_at: Utc::now(),
         },
         Command::SubmitJob {
             job_id: job_id_2,
             command: "echo second".to_string(),
+            created_at: Utc::now(),
         },
     ];
 
     // Apply committed entries to job queue (simulating scheduler loop behavior)
     for entry in committed_entries {
-        if let Command::SubmitJob { job_id, command } = entry {
+        if let Command::SubmitJob {
+            job_id,
+            command,
+            created_at,
+        } = entry
+        {
             if queue.get_job(&job_id).is_none() {
-                queue.add_job(Job::with_id(job_id, command));
+                queue.add_job(Job::with_id(job_id, command, created_at));
             }
         }
     }
@@ -193,7 +201,7 @@ fn test_apply_job_status_update_from_committed_entry() {
 
     // First, add a job
     let job_id = Uuid::new_v4();
-    queue.add_job(Job::with_id(job_id, "echo test".to_string()));
+    queue.add_job(Job::with_id(job_id, "echo test".to_string(), Utc::now()));
 
     // Simulate receiving a committed UpdateJobStatus entry
     // Note: Output is now stored locally, not replicated through Raft
@@ -202,6 +210,7 @@ fn test_apply_job_status_update_from_committed_entry() {
         status: JobStatus::Completed,
         executed_by: 1,
         exit_code: Some(0),
+        completed_at: Some(Utc::now()),
     };
 
     // Apply the status update (simulating scheduler loop behavior)
@@ -210,9 +219,10 @@ fn test_apply_job_status_update_from_committed_entry() {
         status,
         executed_by,
         exit_code,
+        completed_at,
     } = status_update
     {
-        queue.update_status_metadata(&job_id, status, executed_by, exit_code);
+        queue.update_status_metadata(&job_id, status, executed_by, exit_code, completed_at);
     }
 
     // Verify status was updated
@@ -232,13 +242,19 @@ fn test_idempotent_entry_application() {
     let command = Command::SubmitJob {
         job_id,
         command: "echo test".to_string(),
+        created_at: Utc::now(),
     };
 
     // Apply the same entry twice (simulating potential redelivery)
     for _ in 0..2 {
-        if let Command::SubmitJob { job_id, command } = &command {
+        if let Command::SubmitJob {
+            job_id,
+            command,
+            created_at,
+        } = &command
+        {
             if queue.get_job(job_id).is_none() {
-                queue.add_job(Job::with_id(*job_id, command.clone()));
+                queue.add_job(Job::with_id(*job_id, command.clone(), *created_at));
             }
         }
     }
@@ -328,7 +344,7 @@ fn test_update_job_result_stores_all_fields() {
     let mut queue = JobQueue::new();
 
     let job_id = Uuid::new_v4();
-    queue.add_job(Job::with_id(job_id, "echo hello".to_string()));
+    queue.add_job(Job::with_id(job_id, "echo hello".to_string(), Utc::now()));
 
     // Update with full result (as the executing node would)
     let updated = queue.update_job_result(
@@ -338,6 +354,7 @@ fn test_update_job_result_stores_all_fields() {
         Some(0),                     // exit_code
         Some("hello\n".to_string()), // output
         None,                        // error
+        Utc::now(),
     );
     assert!(updated);
 
@@ -355,7 +372,11 @@ fn test_update_job_result_with_failure() {
     let mut queue = JobQueue::new();
 
     let job_id = Uuid::new_v4();
-    queue.add_job(Job::with_id(job_id, "invalid_command".to_string()));
+    queue.add_job(Job::with_id(
+        job_id,
+        "invalid_command".to_string(),
+        Utc::now(),
+    ));
 
     let updated = queue.update_job_result(
         &job_id,
@@ -364,6 +385,7 @@ fn test_update_job_result_with_failure() {
         Some(127),                             // exit_code (command not found)
         None,                                  // output
         Some("command not found".to_string()), // error
+        Utc::now(),
     );
     assert!(updated);
 
@@ -388,6 +410,7 @@ fn test_update_job_result_nonexistent_job() {
         Some(0),
         Some("output".to_string()),
         None,
+        Utc::now(),
     );
     assert!(!updated);
 }
@@ -401,6 +424,7 @@ fn test_update_job_result_with_output_and_error() {
     queue.add_job(Job::with_id(
         job_id,
         "echo hello >&2; echo world".to_string(),
+        Utc::now(),
     ));
 
     let updated = queue.update_job_result(
@@ -410,6 +434,7 @@ fn test_update_job_result_with_output_and_error() {
         Some(0),
         Some("world\n".to_string()), // stdout
         Some("hello\n".to_string()), // stderr (captured as error)
+        Utc::now(),
     );
     assert!(updated);
 
@@ -427,7 +452,7 @@ fn test_update_status_metadata_does_not_update_output() {
     let mut queue = JobQueue::new();
 
     let job_id = Uuid::new_v4();
-    queue.add_job(Job::with_id(job_id, "echo test".to_string()));
+    queue.add_job(Job::with_id(job_id, "echo test".to_string(), Utc::now()));
 
     // First, set output locally (simulating executing node)
     queue.update_job_result(
@@ -437,11 +462,12 @@ fn test_update_status_metadata_does_not_update_output() {
         None,
         Some("local output".to_string()),
         None,
+        Utc::now(),
     );
 
     // Now apply metadata update (simulating Raft replication)
     // This should NOT overwrite the output
-    queue.update_status_metadata(&job_id, JobStatus::Completed, 1, Some(0));
+    queue.update_status_metadata(&job_id, JobStatus::Completed, 1, Some(0), Some(Utc::now()));
 
     let job = queue.get_job(&job_id).unwrap();
     assert_eq!(job.status, JobStatus::Completed);
@@ -455,7 +481,7 @@ fn test_update_status_metadata_does_not_update_error() {
     let mut queue = JobQueue::new();
 
     let job_id = Uuid::new_v4();
-    queue.add_job(Job::with_id(job_id, "bad_command".to_string()));
+    queue.add_job(Job::with_id(job_id, "bad_command".to_string(), Utc::now()));
 
     // Set error locally
     queue.update_job_result(
@@ -465,10 +491,11 @@ fn test_update_status_metadata_does_not_update_error() {
         None,
         None,
         Some("local error".to_string()),
+        Utc::now(),
     );
 
     // Apply metadata update
-    queue.update_status_metadata(&job_id, JobStatus::Failed, 1, Some(1));
+    queue.update_status_metadata(&job_id, JobStatus::Failed, 1, Some(1), Some(Utc::now()));
 
     let job = queue.get_job(&job_id).unwrap();
     assert_eq!(job.status, JobStatus::Failed);
@@ -483,26 +510,26 @@ fn test_update_status_metadata_exit_codes() {
 
     // Test with exit code 0 (success)
     let job_id1 = Uuid::new_v4();
-    queue.add_job(Job::with_id(job_id1, "true".to_string()));
-    queue.update_status_metadata(&job_id1, JobStatus::Completed, 1, Some(0));
+    queue.add_job(Job::with_id(job_id1, "true".to_string(), Utc::now()));
+    queue.update_status_metadata(&job_id1, JobStatus::Completed, 1, Some(0), Some(Utc::now()));
     assert_eq!(queue.get_job(&job_id1).unwrap().exit_code, Some(0));
 
     // Test with exit code 1 (general error)
     let job_id2 = Uuid::new_v4();
-    queue.add_job(Job::with_id(job_id2, "false".to_string()));
-    queue.update_status_metadata(&job_id2, JobStatus::Failed, 1, Some(1));
+    queue.add_job(Job::with_id(job_id2, "false".to_string(), Utc::now()));
+    queue.update_status_metadata(&job_id2, JobStatus::Failed, 1, Some(1), Some(Utc::now()));
     assert_eq!(queue.get_job(&job_id2).unwrap().exit_code, Some(1));
 
     // Test with exit code 127 (command not found)
     let job_id3 = Uuid::new_v4();
-    queue.add_job(Job::with_id(job_id3, "nonexistent".to_string()));
-    queue.update_status_metadata(&job_id3, JobStatus::Failed, 1, Some(127));
+    queue.add_job(Job::with_id(job_id3, "nonexistent".to_string(), Utc::now()));
+    queue.update_status_metadata(&job_id3, JobStatus::Failed, 1, Some(127), Some(Utc::now()));
     assert_eq!(queue.get_job(&job_id3).unwrap().exit_code, Some(127));
 
     // Test with None exit code (e.g., killed by signal)
     let job_id4 = Uuid::new_v4();
-    queue.add_job(Job::with_id(job_id4, "killed".to_string()));
-    queue.update_status_metadata(&job_id4, JobStatus::Failed, 1, None);
+    queue.add_job(Job::with_id(job_id4, "killed".to_string(), Utc::now()));
+    queue.update_status_metadata(&job_id4, JobStatus::Failed, 1, None, Some(Utc::now()));
     assert_eq!(queue.get_job(&job_id4).unwrap().exit_code, None);
 }
 
@@ -512,7 +539,13 @@ fn test_update_status_metadata_nonexistent_job() {
     let mut queue = JobQueue::new();
 
     let nonexistent_id = Uuid::new_v4();
-    let updated = queue.update_status_metadata(&nonexistent_id, JobStatus::Completed, 1, Some(0));
+    let updated = queue.update_status_metadata(
+        &nonexistent_id,
+        JobStatus::Completed,
+        1,
+        Some(0),
+        Some(Utc::now()),
+    );
     assert!(!updated);
 }
 
@@ -525,7 +558,7 @@ fn test_job_new_fields_initialized() {
     assert_eq!(job.executed_by, None);
     assert_eq!(job.exit_code, None);
 
-    let job_with_id = Job::with_id(Uuid::new_v4(), "echo test".to_string());
+    let job_with_id = Job::with_id(Uuid::new_v4(), "echo test".to_string(), Utc::now());
     assert_eq!(job_with_id.executed_by, None);
     assert_eq!(job_with_id.exit_code, None);
 }

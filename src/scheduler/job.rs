@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -30,6 +31,8 @@ pub struct Job {
     pub exit_code: Option<i32>,
     pub output: Option<String>,
     pub error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
 }
 
 impl Job {
@@ -43,10 +46,12 @@ impl Job {
             exit_code: None,
             output: None,
             error: None,
+            created_at: Utc::now(),
+            completed_at: None,
         }
     }
 
-    pub fn with_id(id: Uuid, command: String) -> Self {
+    pub fn with_id(id: Uuid, command: String, created_at: DateTime<Utc>) -> Self {
         Self {
             id,
             command,
@@ -56,6 +61,8 @@ impl Job {
             exit_code: None,
             output: None,
             error: None,
+            created_at,
+            completed_at: None,
         }
     }
 }

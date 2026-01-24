@@ -1,3 +1,4 @@
+use chrono::Utc;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -166,11 +167,11 @@ impl Node {
                     let entries = raft_node.get_committed_entries().await;
                     for entry in entries {
                         match entry.command {
-                            Command::SubmitJob { job_id, command } => {
+                            Command::SubmitJob { job_id, command, created_at } => {
                                 let mut queue = job_queue.write().await;
                                 if queue.get_job(&job_id).is_none() {
-                                    if queue.add_job(Job::with_id(job_id, command)) {
-                                        tracing::debug!(job_id = %job_id, "Job added from committed entry");
+                                    if queue.add_job(Job::with_id(job_id, command, created_at)) {
+                                        tracing::debug!(job_id = %job_id, created_at = %created_at, "Job added from committed entry");
                                     } else {
                                         tracing::warn!(job_id = %job_id, "Job queue at capacity, job dropped");
                                     }
@@ -181,10 +182,17 @@ impl Node {
                                 status,
                                 executed_by,
                                 exit_code,
+                                completed_at,
                             } => {
                                 let mut queue = job_queue.write().await;
-                                queue.update_status_metadata(&job_id, status, executed_by, exit_code);
-                                tracing::debug!(job_id = %job_id, status = %status, executed_by, "Job status updated");
+                                queue.update_status_metadata(&job_id, status, executed_by, exit_code, completed_at);
+                                tracing::debug!(
+                                    job_id = %job_id,
+                                    status = %status,
+                                    executed_by,
+                                    completed_at = completed_at.map(|dt| dt.to_rfc3339()).as_deref().unwrap_or("n/a"),
+                                    "Job status updated"
+                                );
                             }
                             Command::RegisterWorker { worker_id } => {
                                 job_assigner.write().await.register_worker(worker_id);
@@ -278,6 +286,7 @@ impl Node {
                 let result = executor.execute(job_id, &command).await;
 
                 // Update local job with full result (output stored locally only)
+                let completed_at = Utc::now();
                 {
                     let mut queue = job_queue.write().await;
                     queue.update_job_result(
@@ -287,6 +296,7 @@ impl Node {
                         result.exit_code,
                         result.output,
                         result.error,
+                        completed_at,
                     );
                 }
 
@@ -303,6 +313,7 @@ impl Node {
                         status: result.status,
                         executed_by: node_id,
                         exit_code: result.exit_code,
+                        completed_at: Some(completed_at),
                     };
                     let (tx, _rx) = tokio::sync::oneshot::channel();
                     if let Err(e) = raft_node

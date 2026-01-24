@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::scheduler::JobStatus;
@@ -25,13 +27,18 @@ impl std::fmt::Display for RaftRole {
 #[derive(Debug, Clone)]
 pub enum Command {
     /// Submit a new job
-    SubmitJob { job_id: Uuid, command: String },
+    SubmitJob {
+        job_id: Uuid,
+        command: String,
+        created_at: DateTime<Utc>,
+    },
     /// Update job status (metadata only - output stored locally on executing node)
     UpdateJobStatus {
         job_id: Uuid,
         status: JobStatus,
         executed_by: u64,
         exit_code: Option<i32>,
+        completed_at: Option<DateTime<Utc>>,
     },
     /// Register a worker
     RegisterWorker { worker_id: u64 },

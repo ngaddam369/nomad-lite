@@ -1,3 +1,5 @@
+use chrono::{DateTime, TimeZone, Utc};
+
 use crate::proto::{
     AppendEntriesRequest, AppendEntriesResponse, LogEntry as ProtoLogEntry, VoteRequest,
     VoteResponse,
@@ -128,6 +130,7 @@ fn proto_to_log_entry(proto: &ProtoLogEntry) -> Option<LogEntry> {
             Some(crate::proto::command::CommandType::SubmitJob(submit)) => Command::SubmitJob {
                 job_id: Uuid::parse_str(&submit.job_id).ok()?,
                 command: submit.command.clone(),
+                created_at: ms_to_datetime(submit.created_at_ms),
             },
             Some(crate::proto::command::CommandType::UpdateJobStatus(update)) => {
                 Command::UpdateJobStatus {
@@ -135,6 +138,7 @@ fn proto_to_log_entry(proto: &ProtoLogEntry) -> Option<LogEntry> {
                     status: proto_status_to_internal(update.status()),
                     executed_by: update.executed_by,
                     exit_code: update.exit_code,
+                    completed_at: update.completed_at_ms.map(ms_to_datetime),
                 }
             }
             Some(crate::proto::command::CommandType::RegisterWorker(register)) => {
@@ -162,10 +166,15 @@ pub fn log_entry_to_proto(entry: &LogEntry) -> ProtoLogEntry {
     };
 
     let command = match &entry.command {
-        Command::SubmitJob { job_id, command } => Some(ProtoCommand {
+        Command::SubmitJob {
+            job_id,
+            command,
+            created_at,
+        } => Some(ProtoCommand {
             command_type: Some(CommandType::SubmitJob(SubmitJobCommand {
                 job_id: job_id.to_string(),
                 command: command.clone(),
+                created_at_ms: created_at.timestamp_millis(),
             })),
         }),
         Command::UpdateJobStatus {
@@ -173,12 +182,14 @@ pub fn log_entry_to_proto(entry: &LogEntry) -> ProtoLogEntry {
             status,
             executed_by,
             exit_code,
+            completed_at,
         } => Some(ProtoCommand {
             command_type: Some(CommandType::UpdateJobStatus(UpdateJobStatusCommand {
                 job_id: job_id.to_string(),
                 status: internal_status_to_proto(status) as i32,
                 executed_by: *executed_by,
                 exit_code: *exit_code,
+                completed_at_ms: completed_at.map(|dt| dt.timestamp_millis()),
             })),
         }),
         Command::RegisterWorker { worker_id } => Some(ProtoCommand {
@@ -194,6 +205,11 @@ pub fn log_entry_to_proto(entry: &LogEntry) -> ProtoLogEntry {
         index: entry.index,
         command,
     }
+}
+
+/// Convert milliseconds since epoch to DateTime<Utc>
+fn ms_to_datetime(ms: i64) -> DateTime<Utc> {
+    Utc.timestamp_millis_opt(ms).single().unwrap_or_default()
 }
 
 fn proto_status_to_internal(status: crate::proto::JobStatus) -> JobStatus {
@@ -233,6 +249,7 @@ mod tests {
             command: Command::SubmitJob {
                 job_id,
                 command: "echo hello".to_string(),
+                created_at: Utc::now(),
             },
         };
 
@@ -264,6 +281,7 @@ mod tests {
                 status: JobStatus::Completed,
                 executed_by: 3,
                 exit_code: Some(0),
+                completed_at: Some(Utc::now()),
             },
         };
 
@@ -296,6 +314,7 @@ mod tests {
                 status: JobStatus::Failed,
                 executed_by: 1,
                 exit_code: None,
+                completed_at: Some(Utc::now()),
             },
         };
 
@@ -354,6 +373,7 @@ mod tests {
                 command_type: Some(CommandType::SubmitJob(SubmitJobCommand {
                     job_id: job_id.to_string(),
                     command: "echo test".to_string(),
+                    created_at_ms: 1000,
                 })),
             }),
         };
@@ -365,6 +385,7 @@ mod tests {
         if let Command::SubmitJob {
             job_id: parsed_id,
             command,
+            ..
         } = entry.command
         {
             assert_eq!(parsed_id, job_id);
@@ -387,6 +408,7 @@ mod tests {
                     status: crate::proto::JobStatus::Completed as i32,
                     executed_by: 3,
                     exit_code: Some(0),
+                    completed_at_ms: Some(2000),
                 })),
             }),
         };
@@ -398,6 +420,7 @@ mod tests {
             status,
             executed_by,
             exit_code,
+            ..
         } = entry.command
         {
             assert_eq!(parsed_id, job_id);
@@ -454,6 +477,7 @@ mod tests {
             command: Command::SubmitJob {
                 job_id,
                 command: "echo roundtrip".to_string(),
+                created_at: Utc::now(),
             },
         };
 
@@ -466,10 +490,12 @@ mod tests {
             Command::SubmitJob {
                 job_id: orig_id,
                 command: orig_cmd,
+                ..
             },
             Command::SubmitJob {
                 job_id: rec_id,
                 command: rec_cmd,
+                ..
             },
         ) = (&original.command, &recovered.command)
         {
@@ -492,6 +518,7 @@ mod tests {
                 status: JobStatus::Failed,
                 executed_by: 5,
                 exit_code: Some(1),
+                completed_at: Some(Utc::now()),
             },
         };
 
@@ -504,12 +531,14 @@ mod tests {
                 status: orig_status,
                 executed_by: orig_exec,
                 exit_code: orig_exit,
+                ..
             },
             Command::UpdateJobStatus {
                 job_id: rec_id,
                 status: rec_status,
                 executed_by: rec_exec,
                 exit_code: rec_exit,
+                ..
             },
         ) = (&original.command, &recovered.command)
         {

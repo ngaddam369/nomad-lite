@@ -57,6 +57,7 @@ message Command {
 message SubmitJobCommand {
     string job_id = 1;
     string command = 2;
+    int64 created_at_ms = 3;
 }
 
 message UpdateJobStatusCommand {
@@ -64,6 +65,7 @@ message UpdateJobStatusCommand {
     JobStatus status = 2;
     uint64 executed_by = 3;
     optional int32 exit_code = 4;
+    optional int64 completed_at_ms = 5;
 }
 
 message RegisterWorkerCommand {
@@ -96,6 +98,8 @@ message SubmitJobRequest {
 message SubmitJobResponse {
     // Job ID assigned to the submitted job
     string job_id = 1;
+    // Timestamp when the job was created (milliseconds since epoch)
+    int64 created_at_ms = 2;
 }
 
 message GetJobStatusRequest {
@@ -110,6 +114,10 @@ message GetJobStatusResponse {
     uint64 assigned_worker = 5;
     uint64 executed_by = 6;
     optional int32 exit_code = 7;
+    // Timestamp when the job was created (milliseconds since epoch)
+    int64 created_at_ms = 8;
+    // Timestamp when the job completed (milliseconds since epoch), 0 if not completed
+    optional int64 completed_at_ms = 9;
 }
 
 message ListJobsRequest {
@@ -137,6 +145,8 @@ message JobInfo {
     string command = 2;
     JobStatus status = 3;
     uint64 assigned_worker = 4;
+    int64 created_at_ms = 5;
+    optional int64 completed_at_ms = 6;
 }
 
 message GetClusterStatusRequest {}

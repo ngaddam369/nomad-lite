@@ -5,6 +5,7 @@
 
 mod test_harness;
 
+use chrono::Utc;
 use std::time::Duration;
 use test_harness::{assert_eventually, TestCluster};
 
@@ -220,6 +221,7 @@ async fn test_follower_rejects_writes() {
             command: nomad_lite::raft::Command::SubmitJob {
                 job_id,
                 command: "echo should_fail".to_string(),
+                created_at: Utc::now(),
             },
             response_tx: tx,
         })
@@ -256,7 +258,11 @@ async fn test_concurrent_job_submissions() {
         let handle = tokio::spawn(async move {
             sender
                 .send(nomad_lite::raft::node::RaftMessage::AppendCommand {
-                    command: nomad_lite::raft::Command::SubmitJob { job_id, command },
+                    command: nomad_lite::raft::Command::SubmitJob {
+                        job_id,
+                        command,
+                        created_at: Utc::now(),
+                    },
                     response_tx: tx,
                 })
                 .await

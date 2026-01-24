@@ -11,6 +11,7 @@ use tokio::sync::{oneshot, RwLock};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
+use chrono::Utc;
 use nomad_lite::config::{NodeConfig, PeerConfig, SandboxConfig};
 use nomad_lite::grpc::GrpcServer;
 use nomad_lite::raft::node::RaftMessage;
@@ -190,10 +191,14 @@ impl TestCluster {
             let entries = raft_node.get_committed_entries().await;
             for entry in entries {
                 match entry.command {
-                    Command::SubmitJob { job_id, command } => {
+                    Command::SubmitJob {
+                        job_id,
+                        command,
+                        created_at,
+                    } => {
                         let mut queue = job_queue.write().await;
                         if queue.get_job(&job_id).is_none() {
-                            queue.add_job(Job::with_id(job_id, command));
+                            queue.add_job(Job::with_id(job_id, command, created_at));
                         }
                     }
                     Command::UpdateJobStatus {
@@ -201,9 +206,16 @@ impl TestCluster {
                         status,
                         executed_by,
                         exit_code,
+                        completed_at,
                     } => {
                         let mut queue = job_queue.write().await;
-                        queue.update_status_metadata(&job_id, status, executed_by, exit_code);
+                        queue.update_status_metadata(
+                            &job_id,
+                            status,
+                            executed_by,
+                            exit_code,
+                            completed_at,
+                        );
                     }
                     Command::RegisterWorker { .. } | Command::Noop => {}
                 }
@@ -264,6 +276,7 @@ impl TestCluster {
                 command: Command::SubmitJob {
                     job_id,
                     command: command.to_string(),
+                    created_at: Utc::now(),
                 },
                 response_tx: tx,
             })
@@ -492,6 +505,7 @@ impl TestCluster {
                 command: Command::SubmitJob {
                     job_id,
                     command: command.to_string(),
+                    created_at: Utc::now(),
                 },
                 response_tx: tx,
             })

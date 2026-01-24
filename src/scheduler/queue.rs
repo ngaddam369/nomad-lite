@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::scheduler::job::{Job, JobStatus};
@@ -73,6 +75,7 @@ impl JobQueue {
 
     /// Update job with full execution result (used by executing node).
     /// This stores output locally - it won't be replicated through Raft.
+    #[allow(clippy::too_many_arguments)]
     pub fn update_job_result(
         &mut self,
         id: &Uuid,
@@ -81,6 +84,7 @@ impl JobQueue {
         exit_code: Option<i32>,
         output: Option<String>,
         error: Option<String>,
+        completed_at: DateTime<Utc>,
     ) -> bool {
         if let Some(job) = self.jobs.get_mut(id) {
             job.status = status;
@@ -88,6 +92,7 @@ impl JobQueue {
             job.exit_code = exit_code;
             job.output = output;
             job.error = error;
+            job.completed_at = Some(completed_at);
             true
         } else {
             false
@@ -102,11 +107,13 @@ impl JobQueue {
         status: JobStatus,
         executed_by: u64,
         exit_code: Option<i32>,
+        completed_at: Option<DateTime<Utc>>,
     ) -> bool {
         if let Some(job) = self.jobs.get_mut(id) {
             job.status = status;
             job.executed_by = Some(executed_by);
             job.exit_code = exit_code;
+            job.completed_at = completed_at;
             // Note: output and error are NOT updated here
             // They remain None on non-executing nodes
             true
@@ -134,9 +141,11 @@ impl JobQueue {
             .collect()
     }
 
-    /// Get all jobs
+    /// Get all jobs sorted chronologically by creation time
     pub fn all_jobs(&self) -> Vec<&Job> {
-        self.jobs.values().collect()
+        let mut jobs: Vec<&Job> = self.jobs.values().collect();
+        jobs.sort_by_key(|j| j.created_at);
+        jobs
     }
 
     /// Get jobs assigned to a specific worker

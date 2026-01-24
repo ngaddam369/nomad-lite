@@ -1,3 +1,4 @@
+use chrono::Utc;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tonic::Request;
@@ -25,7 +26,7 @@ async fn test_get_job_output_executed_by_this_node() {
     let job_id = Uuid::new_v4();
     {
         let mut q = queue.write().await;
-        q.add_job(Job::with_id(job_id, "echo hello".to_string()));
+        q.add_job(Job::with_id(job_id, "echo hello".to_string(), Utc::now()));
         q.update_job_result(
             &job_id,
             JobStatus::Completed,
@@ -33,6 +34,7 @@ async fn test_get_job_output_executed_by_this_node() {
             Some(0),
             Some("hello\n".to_string()),
             None,
+            Utc::now(),
         );
     }
 
@@ -58,7 +60,7 @@ async fn test_get_job_output_executed_by_other_node() {
     let job_id = Uuid::new_v4();
     {
         let mut q = queue.write().await;
-        q.add_job(Job::with_id(job_id, "echo hello".to_string()));
+        q.add_job(Job::with_id(job_id, "echo hello".to_string(), Utc::now()));
         q.update_job_result(
             &job_id,
             JobStatus::Completed,
@@ -66,6 +68,7 @@ async fn test_get_job_output_executed_by_other_node() {
             Some(0),
             Some("hello\n".to_string()),
             None,
+            Utc::now(),
         );
     }
 
@@ -125,7 +128,7 @@ async fn test_get_job_output_with_output_and_error() {
     let job_id = Uuid::new_v4();
     {
         let mut q = queue.write().await;
-        q.add_job(Job::with_id(job_id, "cmd".to_string()));
+        q.add_job(Job::with_id(job_id, "cmd".to_string(), Utc::now()));
         q.update_job_result(
             &job_id,
             JobStatus::Completed,
@@ -133,6 +136,7 @@ async fn test_get_job_output_with_output_and_error() {
             Some(0),
             Some("stdout content".to_string()),
             Some("stderr content".to_string()),
+            Utc::now(),
         );
     }
 
@@ -156,7 +160,7 @@ async fn test_get_job_output_empty_output() {
     let job_id = Uuid::new_v4();
     {
         let mut q = queue.write().await;
-        q.add_job(Job::with_id(job_id, "true".to_string()));
+        q.add_job(Job::with_id(job_id, "true".to_string(), Utc::now()));
         q.update_job_result(
             &job_id,
             JobStatus::Completed,
@@ -164,6 +168,7 @@ async fn test_get_job_output_empty_output() {
             Some(0),
             None, // No output
             None,
+            Utc::now(),
         );
     }
 
@@ -188,7 +193,7 @@ async fn test_get_job_output_job_not_executed() {
     let job_id = Uuid::new_v4();
     {
         let mut q = queue.write().await;
-        q.add_job(Job::with_id(job_id, "echo test".to_string()));
+        q.add_job(Job::with_id(job_id, "echo test".to_string(), Utc::now()));
         // Job is pending, executed_by is None
     }
 

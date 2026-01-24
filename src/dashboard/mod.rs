@@ -41,6 +41,8 @@ struct JobResponse {
     assigned_worker: Option<u64>,
     output: Option<String>,
     error: Option<String>,
+    created_at: String,
+    completed_at: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -118,6 +120,8 @@ async fn list_jobs_handler(State(state): State<DashboardState>) -> impl IntoResp
             assigned_worker: job.assigned_worker,
             output: job.output.clone(),
             error: job.error.clone(),
+            created_at: job.created_at.to_rfc3339(),
+            completed_at: job.completed_at.map(|dt| dt.to_rfc3339()),
         })
         .collect();
 
@@ -145,6 +149,7 @@ async fn submit_job_handler(
     let command = Command::SubmitJob {
         job_id,
         command: payload.command,
+        created_at: job.created_at,
     };
 
     let (tx, rx) = tokio::sync::oneshot::channel();
