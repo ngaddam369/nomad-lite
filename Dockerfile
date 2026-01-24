@@ -24,9 +24,12 @@ COPY examples/ examples/
 RUN touch src/main.rs && cargo build --release
 
 # Runtime stage
+FROM docker:27-cli AS docker-cli
+
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 
 WORKDIR /app
 

@@ -97,6 +97,9 @@ impl RaftNode {
     pub async fn connect_to_peers(&self) {
         let mut peers = self.peers.lock().await;
         for peer_config in &self.config.peers {
+            if peers.contains_key(&peer_config.node_id) {
+                continue;
+            }
             let addr = format!("http://{}", peer_config.addr);
             match RaftServiceClient::connect(addr.clone()).await {
                 Ok(client) => {
@@ -113,6 +116,15 @@ impl RaftNode {
                 }
             }
         }
+    }
+
+    /// Check if all configured peers are connected
+    pub async fn all_peers_connected(&self) -> bool {
+        let peers = self.peers.lock().await;
+        self.config
+            .peers
+            .iter()
+            .all(|p| peers.contains_key(&p.node_id))
     }
 
     /// Simulate disconnecting from a specific peer (moves client to disconnected_peers).

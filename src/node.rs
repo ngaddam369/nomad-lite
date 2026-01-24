@@ -60,8 +60,21 @@ impl Node {
         self,
         raft_rx: tokio::sync::mpsc::Receiver<crate::raft::node::RaftMessage>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        // Connect to peers
+        // Connect to peers (best-effort initial attempt)
         self.raft_node.connect_to_peers().await;
+
+        // Spawn background task to retry connecting to any peers that weren't available at startup
+        let retry_raft = self.raft_node.clone();
+        tokio::spawn(async move {
+            loop {
+                if retry_raft.all_peers_connected().await {
+                    tracing::info!("All peers connected");
+                    break;
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                retry_raft.connect_to_peers().await;
+            }
+        });
 
         // Spawn Raft node
         let raft_node = self.raft_node.clone();

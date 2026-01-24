@@ -44,14 +44,26 @@ async fn test_minority_partition_cannot_elect_leader() {
     let mut cluster = TestCluster::new(5, 50310).await;
 
     // Wait for initial leader
-    cluster
+    let leader_id = cluster
         .wait_for_leader(Duration::from_secs(5))
         .await
         .expect("Initial leader should be elected");
 
-    // Create partition: [1,2,3] vs [4,5]
-    let majority = vec![1, 2, 3];
-    let minority = vec![4, 5];
+    // Build partition groups dynamically so the leader is always in the majority.
+    // This prevents a stale leader in the minority from passing is_leader() checks.
+    let mut majority: Vec<u64> = vec![leader_id];
+    let mut minority: Vec<u64> = Vec::new();
+    for id in 1..=5u64 {
+        if id == leader_id {
+            continue;
+        }
+        if majority.len() < 3 {
+            majority.push(id);
+        } else {
+            minority.push(id);
+        }
+    }
+
     cluster.create_partition(&majority, &minority).await;
 
     // Wait for elections to settle
