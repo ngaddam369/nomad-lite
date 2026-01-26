@@ -148,7 +148,7 @@
                                 <th>ID</th>
                                 <th>Command</th>
                                 <th>Status</th>
-                                <th>Worker</th>
+                                <th>Executed By</th>
                                 <th>Created</th>
                                 <th>Completed</th>
                                 <th>Output</th>
@@ -160,7 +160,7 @@
                                     <td>${job.id.substring(0, 8)}...</td>
                                     <td><code>${escapeHtml(job.command)}</code></td>
                                     <td class="status-${job.status}">${job.status.toUpperCase()}</td>
-                                    <td>${job.assigned_worker || '-'}</td>
+                                    <td>${job.executed_by || '-'}</td>
                                     <td class="timestamp">${formatTimestamp(job.created_at)}</td>
                                     <td class="timestamp">${job.completed_at ? formatTimestamp(job.completed_at) : '-'}</td>
                                     <td class="output ${job.error ? 'error' : ''}">${escapeHtml(job.error || job.output || '-')}</td>
