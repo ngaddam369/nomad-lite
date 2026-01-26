@@ -62,6 +62,7 @@
         .refresh-btn { background: #30363d; }
         .refresh-btn:hover { background: #3d444d; }
         .output { font-family: monospace; font-size: 12px; color: #8b949e; max-width: 300px; overflow: hidden; text-overflow: ellipsis; }
+        .timestamp { font-size: 12px; color: #8b949e; white-space: nowrap; }
         .error { color: #f85149; }
         .empty { color: #8b949e; text-align: center; padding: 40px; }
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
@@ -148,6 +149,8 @@
                                 <th>Command</th>
                                 <th>Status</th>
                                 <th>Worker</th>
+                                <th>Created</th>
+                                <th>Completed</th>
                                 <th>Output</th>
                             </tr>
                         </thead>
@@ -158,6 +161,8 @@
                                     <td><code>${escapeHtml(job.command)}</code></td>
                                     <td class="status-${job.status}">${job.status.toUpperCase()}</td>
                                     <td>${job.assigned_worker || '-'}</td>
+                                    <td class="timestamp">${formatTimestamp(job.created_at)}</td>
+                                    <td class="timestamp">${job.completed_at ? formatTimestamp(job.completed_at) : '-'}</td>
                                     <td class="output ${job.error ? 'error' : ''}">${escapeHtml(job.error || job.output || '-')}</td>
                                 </tr>
                             `).join('')}
@@ -205,6 +210,12 @@
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        function formatTimestamp(isoString) {
+            if (!isoString) return '-';
+            const date = new Date(isoString);
+            return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         }
 
         function refresh() {
