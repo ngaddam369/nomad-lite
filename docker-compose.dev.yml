@@ -1,0 +1,81 @@
+# Nomad-Lite Docker Compose - Development Mode (No TLS)
+#
+# Usage:
+#   docker-compose -f docker-compose.dev.yml up --build
+#
+# For production with mTLS, use docker-compose.yml instead.
+
+services:
+  node1:
+    build: .
+    container_name: nomad-node1
+    command:
+      - --node-id
+      - "1"
+      - --port
+      - "50051"
+      - --dashboard-port
+      - "8080"
+      - --peers
+      - "2:node2:50051,3:node3:50051"
+    ports:
+      - "50051:50051"
+      - "8081:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - nomad-net
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  node2:
+    build: .
+    container_name: nomad-node2
+    command:
+      - --node-id
+      - "2"
+      - --port
+      - "50051"
+      - --dashboard-port
+      - "8080"
+      - --peers
+      - "1:node1:50051,3:node3:50051"
+    ports:
+      - "50052:50051"
+      - "8082:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - nomad-net
+    depends_on:
+      - node1
+
+  node3:
+    build: .
+    container_name: nomad-node3
+    command:
+      - --node-id
+      - "3"
+      - --port
+      - "50051"
+      - --dashboard-port
+      - "8080"
+      - --peers
+      - "1:node1:50051,2:node2:50051"
+    ports:
+      - "50053:50051"
+      - "8083:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - nomad-net
+    depends_on:
+      - node1
+      - node2
+
+networks:
+  nomad-net:
+    driver: bridge

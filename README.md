@@ -94,14 +94,23 @@ cargo run -- --node-id 3 --port 50053 --dashboard-port 8083 \
 ### Docker Compose
 
 ```bash
-docker-compose up --build        # Foreground
-docker-compose up --build -d     # Background
-docker-compose down              # Stop
+# With mTLS (recommended, certs auto-generated)
+docker-compose up --build
+
+# Without TLS (development only)
+docker-compose -f docker-compose.dev.yml up --build
+
+# Stop and cleanup
+docker-compose down              # Stop cluster
+docker-compose down -v           # Stop and remove certs volume
 ```
 
-**Endpoints:** Node 1: `localhost:50051` (gRPC), `localhost:8081` (dashboard)
+**Endpoints:**
+- Node 1: `localhost:50051` (gRPC), `localhost:8081` (dashboard)
+- Node 2: `localhost:50052` (gRPC), `localhost:8082` (dashboard)
+- Node 3: `localhost:50053` (gRPC), `localhost:8083` (dashboard)
 
-### With mTLS
+### With mTLS (Local)
 
 ```bash
 # Generate certificates

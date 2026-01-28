@@ -28,12 +28,14 @@ FROM docker:27-cli AS docker-cli
 
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ca-certificates openssl && rm -rf /var/lib/apt/lists/*
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 
 WORKDIR /app
 
 COPY --from=builder /app/target/release/nomad-lite /app/nomad-lite
+COPY scripts/gen-test-certs.sh /app/gen-test-certs.sh
+RUN chmod +x /app/gen-test-certs.sh
 
 EXPOSE 50051 8080
 
