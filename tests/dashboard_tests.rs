@@ -72,7 +72,7 @@ fn create_test_state() -> (
     tokio::sync::mpsc::Receiver<nomad_lite::raft::node::RaftMessage>,
 ) {
     let config = NodeConfig::default();
-    let (raft_node, raft_rx) = RaftNode::new(config);
+    let (raft_node, raft_rx) = RaftNode::new(config, None);
 
     let state = DashboardState {
         raft_node: Arc::new(raft_node),

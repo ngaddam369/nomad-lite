@@ -1,9 +1,11 @@
 use clap::Parser;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
-use nomad_lite::config::{NodeConfig, PeerConfig, SandboxConfig};
+use nomad_lite::config::{NodeConfig, PeerConfig, SandboxConfig, TlsConfig};
 use nomad_lite::node::Node;
+use nomad_lite::tls::TlsIdentity;
 
 #[derive(Parser, Debug)]
 #[command(name = "nomad-lite")]
@@ -29,6 +31,28 @@ struct Args {
     /// Docker image to use for job execution
     #[arg(long, default_value = "alpine:latest")]
     image: String,
+
+    // === TLS Options ===
+    /// Enable TLS for all gRPC communication
+    #[arg(long)]
+    tls: bool,
+
+    /// Path to CA certificate (PEM format)
+    #[arg(long, requires = "tls")]
+    ca_cert: Option<PathBuf>,
+
+    /// Path to node certificate (PEM format)
+    #[arg(long, requires = "tls")]
+    cert: Option<PathBuf>,
+
+    /// Path to node private key (PEM format)
+    #[arg(long, requires = "tls")]
+    key: Option<PathBuf>,
+
+    /// Allow running without TLS even when --tls is specified but certs are missing.
+    /// Useful for development. NOT recommended for production.
+    #[arg(long)]
+    allow_insecure: bool,
 }
 
 fn parse_peers(peers_str: &str) -> Vec<PeerConfig> {
@@ -65,6 +89,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args = Args::parse();
 
+    // Build TLS configuration
+    let tls_config = TlsConfig {
+        enabled: args.tls,
+        ca_cert_path: args.ca_cert,
+        cert_path: args.cert,
+        key_path: args.key,
+        allow_insecure: args.allow_insecure,
+    };
+
+    // Validate and load TLS identity if configured
+    let tls_identity = if tls_config.is_complete() {
+        match TlsIdentity::load(&tls_config).await {
+            Ok(identity) => {
+                tracing::info!("TLS enabled with mTLS authentication");
+                Some(identity)
+            }
+            Err(e) => {
+                if tls_config.allow_insecure {
+                    tracing::warn!(
+                        error = %e,
+                        "TLS certificate loading failed, running in insecure mode"
+                    );
+                    None
+                } else {
+                    return Err(format!("TLS certificate loading failed: {}", e).into());
+                }
+            }
+        }
+    } else if tls_config.enabled {
+        // TLS requested but not all paths provided
+        if tls_config.allow_insecure {
+            tracing::warn!(
+                "TLS enabled but certificate paths incomplete, running in insecure mode"
+            );
+            None
+        } else {
+            return Err("TLS enabled but missing required paths (--ca-cert, --cert, --key)".into());
+        }
+    } else {
+        // TLS not requested
+        if !args.peers.is_empty() {
+            tracing::warn!(
+                "Running without TLS in a multi-node cluster. \
+                 Consider using --tls for production deployments."
+            );
+        }
+        None
+    };
+
     let listen_addr: SocketAddr = format!("0.0.0.0:{}", args.port).parse()?;
     let dashboard_addr: Option<SocketAddr> = match args.dashboard_port {
         Some(p) => Some(format!("0.0.0.0:{}", p).parse()?),
@@ -85,17 +158,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         election_timeout_max_ms: 300,
         heartbeat_interval_ms: 50,
         sandbox,
+        tls: tls_config,
     };
 
     tracing::info!(
         node_id = config.node_id,
         listen_addr = %config.listen_addr,
         dashboard_addr = ?dashboard_addr,
+        tls_enabled = tls_identity.is_some(),
         peers = ?config.peers.iter().map(|p| format!("{}:{}", p.node_id, p.addr)).collect::<Vec<_>>(),
         "Starting nomad-lite node"
     );
 
-    let (node, raft_rx) = Node::new(config, dashboard_addr);
+    let (node, raft_rx) = Node::new(config, dashboard_addr, tls_identity);
     node.run(raft_rx).await?;
 
     Ok(())

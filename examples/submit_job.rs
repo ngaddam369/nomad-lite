@@ -4,15 +4,29 @@ use nomad_lite::proto::{
     GetClusterStatusRequest, GetJobStatusRequest, ListJobsRequest, StreamJobsRequest,
     SubmitJobRequest,
 };
+use std::path::PathBuf;
 use tokio_stream::StreamExt;
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
 #[derive(Parser, Debug)]
 #[command(name = "submit-job")]
 #[command(about = "CLI client for nomad-lite scheduler")]
 struct Args {
-    /// Server address
+    /// Server address (use https:// for TLS)
     #[arg(long, default_value = "http://127.0.0.1:50051")]
     addr: String,
+
+    /// Path to CA certificate (PEM format) for TLS
+    #[arg(long)]
+    ca_cert: Option<PathBuf>,
+
+    /// Path to client certificate (PEM format) for mTLS
+    #[arg(long)]
+    cert: Option<PathBuf>,
+
+    /// Path to client private key (PEM format) for mTLS
+    #[arg(long)]
+    key: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Commands,
@@ -42,11 +56,42 @@ enum Commands {
     Cluster,
 }
 
+async fn create_channel(args: &Args) -> Result<Channel, Box<dyn std::error::Error>> {
+    let endpoint = Channel::from_shared(args.addr.clone())?;
+
+    // Check if TLS is configured
+    let has_tls = args.ca_cert.is_some() || args.addr.starts_with("https://");
+
+    if has_tls {
+        let mut tls_config = ClientTlsConfig::new().domain_name("nomad-lite-cluster");
+
+        // Load CA certificate if provided
+        if let Some(ca_path) = &args.ca_cert {
+            let ca_cert = tokio::fs::read(ca_path).await?;
+            let ca_cert = Certificate::from_pem(ca_cert);
+            tls_config = tls_config.ca_certificate(ca_cert);
+        }
+
+        // Load client certificate and key for mTLS if both provided
+        if let (Some(cert_path), Some(key_path)) = (&args.cert, &args.key) {
+            let cert = tokio::fs::read(cert_path).await?;
+            let key = tokio::fs::read(key_path).await?;
+            let identity = Identity::from_pem(cert, key);
+            tls_config = tls_config.identity(identity);
+        }
+
+        Ok(endpoint.tls_config(tls_config)?.connect().await?)
+    } else {
+        Ok(endpoint.connect().await?)
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    let mut client = SchedulerServiceClient::connect(args.addr.clone()).await?;
+    let channel = create_channel(&args).await?;
+    let mut client = SchedulerServiceClient::new(channel);
 
     match args.command {
         Commands::Submit { cmd } => {

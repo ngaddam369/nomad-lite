@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "net", "process"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "net", "process", "fs"] }
 tokio-stream = "0.1"
-tonic = "0.12"
+tonic = { version = "0.12", features = ["tls"] }
 prost = "0.13"
 uuid = { version = "1", features = ["v4", "serde"] }
 serde = { version = "1", features = ["derive"] }
@@ -27,6 +27,7 @@ tonic-build = "0.12"
 tower = { version = "0.4", features = ["util"] }
 http-body-util = "0.1"
 futures = "0.3"
+tempfile = "3"
 
 [[example]]
 name = "submit_job"

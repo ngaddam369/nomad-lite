@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch, Mutex, RwLock};
 use tokio::time::{timeout, Duration, Instant};
-use tonic::transport::Channel;
+use tonic::transport::{Channel, Endpoint};
 
 use crate::config::NodeConfig;
 use crate::proto::raft_service_client::RaftServiceClient;
@@ -10,6 +10,7 @@ use crate::proto::{AppendEntriesRequest, VoteRequest};
 use crate::raft::rpc::{handle_append_entries, handle_request_vote, log_entry_to_proto};
 use crate::raft::state::{Command, RaftRole, RaftState};
 use crate::raft::timer::random_election_timeout;
+use crate::tls::TlsIdentity;
 
 /// Message types for the Raft node event loop
 #[derive(Debug)]
@@ -42,10 +43,15 @@ pub struct RaftNode {
     commit_notify_rx: watch::Receiver<u64>,
     /// Tracks last successful response time from each peer
     peer_last_seen: Arc<RwLock<HashMap<u64, Instant>>>,
+    /// TLS identity for secure peer connections
+    tls_identity: Option<TlsIdentity>,
 }
 
 impl RaftNode {
-    pub fn new(config: NodeConfig) -> (Self, mpsc::Receiver<RaftMessage>) {
+    pub fn new(
+        config: NodeConfig,
+        tls_identity: Option<TlsIdentity>,
+    ) -> (Self, mpsc::Receiver<RaftMessage>) {
         let (message_tx, message_rx) = mpsc::channel(100);
         let (commit_notify_tx, commit_notify_rx) = watch::channel(0);
 
@@ -60,6 +66,7 @@ impl RaftNode {
             commit_notify_tx,
             commit_notify_rx,
             peer_last_seen: Arc::new(RwLock::new(HashMap::new())),
+            tls_identity,
         };
 
         (node, message_rx)
@@ -100,16 +107,62 @@ impl RaftNode {
             if peers.contains_key(&peer_config.node_id) {
                 continue;
             }
-            let addr = format!("http://{}", peer_config.addr);
-            match RaftServiceClient::connect(addr.clone()).await {
-                Ok(client) => {
-                    tracing::info!(peer_id = peer_config.node_id, addr = %addr, "Connected to peer");
+
+            // Build URI with appropriate scheme based on TLS configuration
+            let (uri, scheme) = if self.tls_identity.is_some() {
+                (format!("https://{}", peer_config.addr), "https")
+            } else {
+                (format!("http://{}", peer_config.addr), "http")
+            };
+
+            // Create endpoint
+            let endpoint = match Endpoint::from_shared(uri.clone()) {
+                Ok(ep) => ep,
+                Err(e) => {
+                    tracing::warn!(
+                        peer_id = peer_config.node_id,
+                        addr = %peer_config.addr,
+                        error = %e,
+                        "Failed to create endpoint"
+                    );
+                    continue;
+                }
+            };
+
+            // Configure TLS if identity is available
+            let connect_result = if let Some(ref tls_identity) = self.tls_identity {
+                let tls_config = tls_identity.client_tls_config();
+                match endpoint.tls_config(tls_config) {
+                    Ok(ep) => ep.connect().await,
+                    Err(e) => {
+                        tracing::warn!(
+                            peer_id = peer_config.node_id,
+                            addr = %peer_config.addr,
+                            error = %e,
+                            "Failed to configure TLS"
+                        );
+                        continue;
+                    }
+                }
+            } else {
+                endpoint.connect().await
+            };
+
+            match connect_result {
+                Ok(channel) => {
+                    let client = RaftServiceClient::new(channel);
+                    tracing::info!(
+                        peer_id = peer_config.node_id,
+                        addr = %peer_config.addr,
+                        scheme,
+                        "Connected to peer"
+                    );
                     peers.insert(peer_config.node_id, client);
                 }
                 Err(e) => {
                     tracing::warn!(
                         peer_id = peer_config.node_id,
-                        addr = %addr,
+                        addr = %peer_config.addr,
                         error = %e,
                         "Failed to connect to peer"
                     );

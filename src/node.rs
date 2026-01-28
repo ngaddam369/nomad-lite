@@ -9,6 +9,7 @@ use crate::grpc::GrpcServer;
 use crate::raft::{Command, RaftNode};
 use crate::scheduler::assigner::JobAssigner;
 use crate::scheduler::{Job, JobQueue, JobStatus};
+use crate::tls::TlsIdentity;
 use crate::worker::JobExecutor;
 
 /// Main node that orchestrates all components
@@ -19,17 +20,19 @@ pub struct Node {
     pub job_assigner: Arc<RwLock<JobAssigner>>,
     pub executor: JobExecutor,
     pub dashboard_addr: Option<SocketAddr>,
+    pub tls_identity: Option<TlsIdentity>,
 }
 
 impl Node {
     pub fn new(
         config: NodeConfig,
         dashboard_addr: Option<SocketAddr>,
+        tls_identity: Option<TlsIdentity>,
     ) -> (
         Self,
         tokio::sync::mpsc::Receiver<crate::raft::node::RaftMessage>,
     ) {
-        let (raft_node, raft_rx) = RaftNode::new(config.clone());
+        let (raft_node, raft_rx) = RaftNode::new(config.clone(), tls_identity.clone());
 
         let node = Self {
             executor: JobExecutor::new(config.sandbox.clone()),
@@ -38,6 +41,7 @@ impl Node {
             job_queue: Arc::new(RwLock::new(JobQueue::new())),
             job_assigner: Arc::new(RwLock::new(JobAssigner::new(5000))), // 5s worker timeout
             dashboard_addr,
+            tls_identity,
         };
 
         (node, raft_rx)
@@ -125,6 +129,7 @@ impl Node {
             self.config.clone(),
             self.raft_node.clone(),
             self.job_queue.clone(),
+            self.tls_identity.clone(),
         );
         server.run().await?;
         Ok(())

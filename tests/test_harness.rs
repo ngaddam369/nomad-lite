@@ -12,7 +12,7 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use chrono::Utc;
-use nomad_lite::config::{NodeConfig, PeerConfig, SandboxConfig};
+use nomad_lite::config::{NodeConfig, PeerConfig, SandboxConfig, TlsConfig};
 use nomad_lite::grpc::GrpcServer;
 use nomad_lite::raft::node::RaftMessage;
 use nomad_lite::raft::state::{Command, RaftRole};
@@ -38,6 +38,7 @@ pub fn test_node_config(node_id: u64, port: u16, peers: Vec<(u64, u16)>) -> Node
         election_timeout_max_ms: 100,
         heartbeat_interval_ms: 20,
         sandbox: SandboxConfig::default(),
+        tls: TlsConfig::default(),
     }
 }
 
@@ -140,7 +141,7 @@ impl TestCluster {
         let port = config.listen_addr.port();
         let listen_addr = config.listen_addr;
 
-        let (raft_node, raft_rx) = RaftNode::new(config.clone());
+        let (raft_node, raft_rx) = RaftNode::new(config.clone(), None);
         let raft_node = Arc::new(raft_node);
         let job_queue = Arc::new(RwLock::new(JobQueue::new()));
 
@@ -158,8 +159,13 @@ impl TestCluster {
         });
 
         // Spawn gRPC server
-        let grpc_server =
-            GrpcServer::new(listen_addr, config, raft_node.clone(), job_queue.clone());
+        let grpc_server = GrpcServer::new(
+            listen_addr,
+            config,
+            raft_node.clone(),
+            job_queue.clone(),
+            None,
+        );
 
         let grpc_handle = tokio::spawn(async move {
             if let Err(e) = grpc_server.run().await {

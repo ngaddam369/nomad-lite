@@ -3,7 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::transport::Channel;
+use tonic::transport::{Channel, Endpoint};
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
@@ -18,6 +18,7 @@ use crate::proto::{
 };
 use crate::raft::{Command, RaftNode};
 use crate::scheduler::{Job, JobQueue, JobStatus};
+use crate::tls::TlsIdentity;
 
 /// gRPC service for client-facing API
 pub struct ClientService {
@@ -28,6 +29,8 @@ pub struct ClientService {
     client_pool: Arc<Mutex<HashMap<u64, SchedulerServiceClient<Channel>>>>,
     /// Connection pool for internal service requests (fetching job output)
     internal_pool: Arc<Mutex<HashMap<u64, InternalServiceClient<Channel>>>>,
+    /// TLS identity for secure connections to other nodes
+    tls_identity: Option<TlsIdentity>,
 }
 
 impl ClientService {
@@ -35,6 +38,7 @@ impl ClientService {
         config: NodeConfig,
         raft_node: Arc<RaftNode>,
         job_queue: Arc<RwLock<JobQueue>>,
+        tls_identity: Option<TlsIdentity>,
     ) -> Self {
         Self {
             config,
@@ -42,7 +46,34 @@ impl ClientService {
             job_queue,
             client_pool: Arc::new(Mutex::new(HashMap::new())),
             internal_pool: Arc::new(Mutex::new(HashMap::new())),
+            tls_identity,
         }
+    }
+
+    /// Create a channel to a peer with TLS if configured
+    async fn create_channel(&self, peer_addr: &str) -> Result<Channel, Status> {
+        let uri = if self.tls_identity.is_some() {
+            format!("https://{}", peer_addr)
+        } else {
+            format!("http://{}", peer_addr)
+        };
+
+        let endpoint = Endpoint::from_shared(uri.clone())
+            .map_err(|e| Status::internal(format!("Invalid endpoint: {}", e)))?;
+
+        let channel = if let Some(ref tls_identity) = self.tls_identity {
+            let tls_config = tls_identity.client_tls_config();
+            endpoint
+                .tls_config(tls_config)
+                .map_err(|e| Status::internal(format!("TLS config error: {}", e)))?
+                .connect()
+                .await
+        } else {
+            endpoint.connect().await
+        };
+
+        channel
+            .map_err(|e| Status::unavailable(format!("Failed to connect to {}: {}", peer_addr, e)))
     }
 
     /// Get or create a cached connection to a peer node
@@ -63,12 +94,9 @@ impl ClientService {
             .map(|p| p.addr.clone())
             .ok_or_else(|| Status::not_found(format!("Unknown node {}", node_id)))?;
 
-        // Create new connection
-        let client = SchedulerServiceClient::connect(format!("http://{}", peer_addr))
-            .await
-            .map_err(|e| {
-                Status::unavailable(format!("Failed to connect to node {}: {}", node_id, e))
-            })?;
+        // Create new connection with TLS if configured
+        let channel = self.create_channel(&peer_addr).await?;
+        let client = SchedulerServiceClient::new(channel);
 
         pool.insert(node_id, client.clone());
         Ok(client)
@@ -93,11 +121,9 @@ impl ClientService {
             .map(|p| p.addr.clone())
             .ok_or_else(|| Status::not_found(format!("Unknown node {}", node_id)))?;
 
-        let client = InternalServiceClient::connect(format!("http://{}", peer_addr))
-            .await
-            .map_err(|e| {
-                Status::unavailable(format!("Failed to connect to node {}: {}", node_id, e))
-            })?;
+        // Create new connection with TLS if configured
+        let channel = self.create_channel(&peer_addr).await?;
+        let client = InternalServiceClient::new(channel);
 
         pool.insert(node_id, client.clone());
         Ok(client)

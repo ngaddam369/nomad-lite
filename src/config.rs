@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 /// Configuration for Docker-based job execution.
 ///
@@ -26,6 +27,45 @@ impl Default for SandboxConfig {
     }
 }
 
+/// TLS configuration for secure node communication.
+///
+/// When enabled, all gRPC communication uses mutual TLS (mTLS):
+/// - Servers present their certificate and verify client certificates
+/// - Clients present their certificate and verify server certificates
+/// - Both sides must have certificates signed by the cluster CA
+#[derive(Debug, Clone, Default)]
+pub struct TlsConfig {
+    /// Enable TLS. If false, all other TLS settings are ignored.
+    pub enabled: bool,
+
+    /// Path to the CA certificate (PEM format).
+    /// Used to verify peer certificates.
+    pub ca_cert_path: Option<PathBuf>,
+
+    /// Path to this node's certificate (PEM format).
+    /// Presented to peers during TLS handshake.
+    pub cert_path: Option<PathBuf>,
+
+    /// Path to this node's private key (PEM format).
+    /// Must match the certificate.
+    pub key_path: Option<PathBuf>,
+
+    /// Allow insecure connections for development/testing.
+    /// When true and TLS files are missing, runs in plaintext mode with warning.
+    /// When false and TLS files are missing, fails to start.
+    pub allow_insecure: bool,
+}
+
+impl TlsConfig {
+    /// Check if TLS is properly configured with all required files.
+    pub fn is_complete(&self) -> bool {
+        self.enabled
+            && self.ca_cert_path.is_some()
+            && self.cert_path.is_some()
+            && self.key_path.is_some()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NodeConfig {
     pub node_id: u64,
@@ -35,6 +75,7 @@ pub struct NodeConfig {
     pub election_timeout_max_ms: u64,
     pub heartbeat_interval_ms: u64,
     pub sandbox: SandboxConfig,
+    pub tls: TlsConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +97,7 @@ impl Default for NodeConfig {
             election_timeout_max_ms: 300,
             heartbeat_interval_ms: 50,
             sandbox: SandboxConfig::default(),
+            tls: TlsConfig::default(),
         }
     }
 }

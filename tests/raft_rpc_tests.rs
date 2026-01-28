@@ -193,7 +193,7 @@ fn test_append_entries_higher_term_becomes_follower() {
 #[test]
 fn test_subscribe_commits_returns_receiver() {
     let config = NodeConfig::default();
-    let (raft_node, _rx) = RaftNode::new(config);
+    let (raft_node, _rx) = RaftNode::new(config, None);
 
     // Should be able to subscribe multiple times
     let _commit_rx1 = raft_node.subscribe_commits();
@@ -203,7 +203,7 @@ fn test_subscribe_commits_returns_receiver() {
 #[tokio::test]
 async fn test_commit_notification_on_follower_append_entries() {
     let config = NodeConfig::default();
-    let (raft_node, _rx) = RaftNode::new(config);
+    let (raft_node, _rx) = RaftNode::new(config, None);
 
     // Add an entry to the log so we can commit it
     {
@@ -240,7 +240,7 @@ async fn test_commit_notification_on_follower_append_entries() {
 #[tokio::test]
 async fn test_no_notification_when_commit_index_unchanged() {
     let config = NodeConfig::default();
-    let (raft_node, _rx) = RaftNode::new(config);
+    let (raft_node, _rx) = RaftNode::new(config, None);
 
     let mut commit_rx = raft_node.subscribe_commits();
 
@@ -281,7 +281,7 @@ async fn test_peer_status_initially_dead() {
             addr: "127.0.0.1:50053".to_string(),
         },
     ];
-    let (raft_node, _rx) = RaftNode::new(config);
+    let (raft_node, _rx) = RaftNode::new(config, None);
 
     // Peers should initially be considered dead (no communication yet)
     let status = raft_node.get_peers_status().await;

@@ -180,6 +180,87 @@ cargo run --example submit_job -- --addr "http://127.0.0.1:50051" status --job-i
 | `--dashboard-port` | - | Web dashboard port (optional) |
 | `--peers` | "" | Peer addresses (format: "id:host:port,...") |
 | `--image` | alpine:latest | Docker image for job execution |
+| `--tls` | false | Enable TLS for all gRPC communication |
+| `--ca-cert` | - | Path to CA certificate (PEM format) |
+| `--cert` | - | Path to node certificate (PEM format) |
+| `--key` | - | Path to node private key (PEM format) |
+| `--allow-insecure` | false | Allow running without TLS even if `--tls` is set but certs fail to load |
+
+## TLS / mTLS
+
+Nomad-lite supports mutual TLS (mTLS) for securing all gRPC communication between nodes and clients.
+
+### Generating Certificates
+
+A helper script is provided to generate test certificates:
+
+```bash
+./scripts/gen-test-certs.sh ./certs
+```
+
+This generates:
+- `ca.crt`, `ca.key` - Certificate Authority
+- `node1.crt`, `node1.key` - Node 1 certificate
+- `node2.crt`, `node2.key` - Node 2 certificate
+- `node3.crt`, `node3.key` - Node 3 certificate
+- `client.crt`, `client.key` - Client certificate
+
+### Running a Cluster with mTLS
+
+Terminal 1:
+```bash
+cargo run -- --node-id 1 --port 50051 --dashboard-port 8081 \
+  --peers "2:127.0.0.1:50052,3:127.0.0.1:50053" \
+  --tls --ca-cert ./certs/ca.crt \
+  --cert ./certs/node1.crt --key ./certs/node1.key
+```
+
+Terminal 2:
+```bash
+cargo run -- --node-id 2 --port 50052 --dashboard-port 8082 \
+  --peers "1:127.0.0.1:50051,3:127.0.0.1:50053" \
+  --tls --ca-cert ./certs/ca.crt \
+  --cert ./certs/node2.crt --key ./certs/node2.key
+```
+
+Terminal 3:
+```bash
+cargo run -- --node-id 3 --port 50053 --dashboard-port 8083 \
+  --peers "1:127.0.0.1:50051,2:127.0.0.1:50052" \
+  --tls --ca-cert ./certs/ca.crt \
+  --cert ./certs/node3.crt --key ./certs/node3.key
+```
+
+### Using the CLI Client with TLS
+
+```bash
+cargo run --example submit_job -- \
+  --addr "https://127.0.0.1:50051" \
+  --ca-cert ./certs/ca.crt \
+  --cert ./certs/client.crt \
+  --key ./certs/client.key \
+  cluster
+```
+
+### Security Features
+
+| Feature | Description |
+|---------|-------------|
+| mTLS | Both client and server authenticate via certificates |
+| CA Verification | All certificates must be signed by the cluster CA |
+| Encrypted Transport | All gRPC traffic is encrypted with TLS 1.2+ |
+
+### Development Mode
+
+For development, you can run without TLS:
+
+```bash
+# Single node (no TLS warning)
+cargo run -- --node-id 1 --port 50051
+
+# Multi-node cluster (logs TLS warning)
+cargo run -- --node-id 1 --port 50051 --peers "2:127.0.0.1:50052"
+```
 
 ## Sandboxing
 
@@ -384,7 +465,7 @@ cargo run -- --node-id 2 --port 50052 \
 
 ### Critical (Security)
 
-- [ ] **No authentication** - gRPC and REST endpoints have no auth. Add mTLS or API keys.
+- [x] **~~No authentication~~** - ✅ mTLS implemented for gRPC. See [TLS / mTLS](#tls--mtls) section.
 - [ ] **CORS allows all origins** - `src/dashboard/mod.rs` uses permissive CORS. Configure specific origins.
 - [ ] **No input validation** - Commands accepted without validation. Add size limits and validation.
 - [ ] **Binds to 0.0.0.0** - Exposes services on all interfaces by default.

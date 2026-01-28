@@ -93,8 +93,32 @@ jobs:
       - name: Run partition tests
         run: cargo test --test partition_tests --verbose -- --test-threads=1
 
-  coverage:
+  test-auth:
+    name: test-auth
     needs: test-partition
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/rust-setup
+
+      - name: Verify openssl is available (required for cert generation)
+        run: openssl version
+
+      - name: Make cert generation script executable
+        run: chmod +x ./scripts/gen-test-certs.sh
+
+      - name: Verify cert generation script works
+        run: |
+          ./scripts/gen-test-certs.sh /tmp/test-certs
+          ls -la /tmp/test-certs
+          rm -rf /tmp/test-certs
+
+      - name: Run TLS/mTLS authentication tests
+        # Tests generate their own certs in temp directories via generate_test_certs()
+        run: cargo test --test tls_tests --verbose
+
+  coverage:
+    needs: test-auth
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -12,12 +12,14 @@ use crate::proto::raft_service_server::RaftServiceServer;
 use crate::proto::scheduler_service_server::SchedulerServiceServer;
 use crate::raft::RaftNode;
 use crate::scheduler::JobQueue;
+use crate::tls::TlsIdentity;
 
 pub struct GrpcServer {
     addr: SocketAddr,
     config: NodeConfig,
     raft_node: Arc<RaftNode>,
     job_queue: Arc<RwLock<JobQueue>>,
+    tls_identity: Option<TlsIdentity>,
 }
 
 impl GrpcServer {
@@ -26,12 +28,14 @@ impl GrpcServer {
         config: NodeConfig,
         raft_node: Arc<RaftNode>,
         job_queue: Arc<RwLock<JobQueue>>,
+        tls_identity: Option<TlsIdentity>,
     ) -> Self {
         Self {
             addr,
             config,
             raft_node,
             job_queue,
+            tls_identity,
         }
     }
 
@@ -41,13 +45,26 @@ impl GrpcServer {
             self.config.clone(),
             self.raft_node.clone(),
             self.job_queue.clone(),
+            self.tls_identity.clone(),
         );
         let internal_service =
             InternalServiceImpl::new(self.job_queue.clone(), self.config.node_id);
 
-        tracing::info!(addr = %self.addr, "Starting gRPC server");
+        // Build server with optional TLS
+        let mut builder = Server::builder();
 
-        Server::builder()
+        if let Some(ref tls_identity) = self.tls_identity {
+            let tls_config = tls_identity.server_tls_config();
+            builder = builder.tls_config(tls_config)?;
+            tracing::info!(addr = %self.addr, "Starting gRPC server with mTLS");
+        } else {
+            tracing::warn!(
+                addr = %self.addr,
+                "Starting gRPC server WITHOUT TLS - not recommended for production"
+            );
+        }
+
+        builder
             .add_service(RaftServiceServer::new(cluster_service))
             .add_service(SchedulerServiceServer::new(client_service))
             .add_service(InternalServiceServer::new(internal_service))
