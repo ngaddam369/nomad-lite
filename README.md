@@ -1,55 +1,46 @@
-# nomad-lite ![CI](https://github.com/ngaddam369/nomad-lite/actions/workflows/ci.yml/badge.svg) [![codecov](https://codecov.io/gh/ngaddam369/nomad-lite/graph/badge.svg)](https://codecov.io/gh/ngaddam369/nomad-lite)
+# nomad-lite
 
-This project implements a distributed job scheduler similar to Nomad, Kubernetes scheduler, or Apache Airflow.
-The Jobs are simple shell commands like `echo hello`, `sleep 5` etc.
+![CI](https://github.com/ngaddam369/nomad-lite/actions/workflows/ci.yml/badge.svg) [![codecov](https://codecov.io/gh/ngaddam369/nomad-lite/graph/badge.svg)](https://codecov.io/gh/ngaddam369/nomad-lite)
+
+A distributed job scheduler with custom Raft consensus, similar to Nomad or Kubernetes scheduler. Jobs are shell commands executed in isolated Docker containers across a cluster.
 
 ## Features
 
-- **Custom Raft Consensus** - Leader election, log replication, and fault tolerance implemented from scratch
-- **Distributed Job Scheduling** - Submit shell commands that get executed across the cluster
-- **gRPC API** - Type-safe client communication using tonic
-- **Web Dashboard** - Real-time cluster monitoring and job management
-- **Automatic Failover** - New leader elected when current leader fails
-- **Docker Sandboxing** - All jobs run in isolated Docker containers for security
+- **Custom Raft Consensus** - Leader election, log replication, and fault tolerance from scratch
+- **Distributed Scheduling** - Jobs executed across cluster with automatic failover
+- **mTLS Security** - Mutual TLS for all gRPC communication
+- **Docker Sandboxing** - Jobs run in isolated containers with restricted capabilities
+- **Web Dashboard** - Real-time monitoring and job management
+- **gRPC + REST APIs** - Type-safe client communication
 
 ## Requirements
 
-| Dependency | Version | Required | Notes |
-|------------|---------|----------|-------|
-| Rust | 1.56+ | Yes | 2021 edition |
-| protoc | 3.0+ | Yes | Protocol Buffers compiler for gRPC |
-| Docker | 20.0+ | Yes | All jobs run in Docker containers |
+| Dependency | Version | Installation |
+|------------|---------|--------------|
+| Rust | 1.56+ | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
+| protoc | 3.0+ | `apt install protobuf-compiler` / `brew install protobuf` |
+| Docker | 20.0+ | `apt install docker.io` / `brew install --cask docker` |
 
-### Installing Dependencies
-
-**Rust:**
+## Quick Start
 
 ```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
+# Build
+cargo build --release
 
-**Protocol Buffers (protoc):**
+# Run single node with dashboard
+cargo run -- --node-id 1 --port 50051 --dashboard-port 8080
 
-```bash
-# Ubuntu/Debian
-sudo apt install protobuf-compiler
-
-# macOS
-brew install protobuf
-
-# Arch Linux
-sudo pacman -S protobuf
+# Open http://localhost:8080
 ```
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                      CLUSTER                                │
+│                        CLUSTER                              │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐          │
 │  │   Node 1    │  │   Node 2    │  │   Node 3    │          │
 │  │  (Leader)   │  │ (Follower)  │  │ (Follower)  │          │
-│  │             │  │             │  │             │          │
 │  │ ┌─────────┐ │  │ ┌─────────┐ │  │ ┌─────────┐ │          │
 │  │ │Scheduler│ │  │ │Scheduler│ │  │ │Scheduler│ │          │
 │  │ │ (active)│ │  │ │(standby)│ │  │ │(standby)│ │          │
@@ -60,116 +51,12 @@ sudo pacman -S protobuf
 │  │ └─────────┘ │  │ └─────────┘ │  │ └─────────┘ │          │
 │  │ ┌─────────┐ │  │ ┌─────────┐ │  │ ┌─────────┐ │          │
 │  │ │ Worker  │ │  │ │ Worker  │ │  │ │ Worker  │ │          │
-│  │ │Executor │ │  │ │Executor │ │  │ │Executor │ │          │
 │  │ └─────────┘ │  │ └─────────┘ │  │ └─────────┘ │          │
 │  └─────────────┘  └─────────────┘  └─────────────┘          │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Components
-
-- **Raft Module** - Handles leader election, log replication, and consensus
-- **Scheduler** - Assigns jobs to available workers (only active on leader)
-- **Worker Executor** - Executes shell commands and reports results
-- **gRPC Server** - Handles client requests and inter-node communication
-- **Dashboard** - Web UI for monitoring and job submission
-
-### State Replication
-
-All nodes maintain consistent state through Raft log replication:
-
-| Operation | Leader | Follower |
-|-----------|--------|----------|
-| `SubmitJob` | Accepts and replicates | Rejects (returns leader hint) |
-| `ListJobs` | Returns all jobs | Returns all jobs (read-only) |
-| `GetJobStatus` | Returns job status | Returns job status (read-only) |
-| `GetClusterStatus` | Returns authoritative status | Forwards to leader |
-
-- **Write operations** (job submission) must go to the leader
-- **Read operations** (list jobs, get status) can be served by any node
-- **Cluster status** is always served by the leader (followers forward requests)
-- Followers automatically replicate committed entries from the leader
-
-## Quick Start
-
-### Local Development
-
-```bash
-# Build the project
-cargo build --release
-
-# Start a single node
-cargo run -- --node-id 1 --port 50051 --dashboard-port 8080
-
-# Open dashboard at http://localhost:8080
-```
-
-### 3-Node Cluster (Local)
-
-Terminal 1:
-
-```bash
-cargo run -- --node-id 1 --port 50051 --dashboard-port 8081 \
-  --peers "2:127.0.0.1:50052,3:127.0.0.1:50053"
-```
-
-Terminal 2:
-
-```bash
-cargo run -- --node-id 2 --port 50052 --dashboard-port 8082 \
-  --peers "1:127.0.0.1:50051,3:127.0.0.1:50053"
-```
-
-Terminal 3:
-
-```bash
-cargo run -- --node-id 3 --port 50053 --dashboard-port 8083 \
-  --peers "1:127.0.0.1:50051,2:127.0.0.1:50052"
-```
-
-## CLI Client
-
-```bash
-# Check cluster status
-cargo run --example submit_job -- --addr "http://127.0.0.1:50051" cluster
-
-# Submit a job
-cargo run --example submit_job -- --addr "http://127.0.0.1:50051" submit --cmd "echo hello"
-
-# List all jobs
-cargo run --example submit_job -- --addr "http://127.0.0.1:50051" list
-
-# List all jobs using streaming (memory-efficient for large lists)
-cargo run --example submit_job -- --addr "http://127.0.0.1:50051" list --stream
-
-# Get job status
-cargo run --example submit_job -- --addr "http://127.0.0.1:50051" status --job-id <JOB_ID>
-```
-
-## API Reference
-
-### gRPC Services
-
-**SchedulerService** (Client API):
-
-- `SubmitJob(command)` - Submit a new job
-- `GetJobStatus(job_id)` - Get status of a job
-- `ListJobs()` - List all jobs (paginated)
-- `StreamJobs()` - Stream all jobs (memory-efficient for large lists)
-- `GetClusterStatus()` - Get cluster information
-
-**RaftService** (Internal):
-
-- `RequestVote` - Election voting
-- `AppendEntries` - Log replication / heartbeats
-
-### REST API (Dashboard)
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/cluster` | GET | Cluster status |
-| `/api/jobs` | GET | List all jobs |
-| `/api/jobs` | POST | Submit a job |
+**Components:** Raft Module (consensus) → Scheduler (job assignment, leader only) → Worker (execution) → gRPC Server (client/inter-node) → Dashboard (web UI)
 
 ## Configuration
 
@@ -178,300 +65,231 @@ cargo run --example submit_job -- --addr "http://127.0.0.1:50051" status --job-i
 | `--node-id` | 1 | Unique node identifier |
 | `--port` | 50051 | gRPC server port |
 | `--dashboard-port` | - | Web dashboard port (optional) |
-| `--peers` | "" | Peer addresses (format: "id:host:port,...") |
-| `--image` | alpine:latest | Docker image for job execution |
-| `--tls` | false | Enable TLS for all gRPC communication |
-| `--ca-cert` | - | Path to CA certificate (PEM format) |
-| `--cert` | - | Path to node certificate (PEM format) |
-| `--key` | - | Path to node private key (PEM format) |
-| `--allow-insecure` | false | Allow running without TLS even if `--tls` is set but certs fail to load |
+| `--peers` | "" | Peer addresses: `"id:host:port,..."` |
+| `--image` | alpine:latest | Docker image for jobs |
+| `--tls` | false | Enable mTLS |
+| `--ca-cert` | - | CA certificate path |
+| `--cert` | - | Node certificate path |
+| `--key` | - | Node private key path |
+| `--allow-insecure` | false | Run without TLS if certs fail |
 
-## TLS / mTLS
+## Running a Cluster
 
-Nomad-lite supports mutual TLS (mTLS) for securing all gRPC communication between nodes and clients.
-
-### Generating Certificates
-
-A helper script is provided to generate test certificates:
+### Local (3 nodes)
 
 ```bash
-./scripts/gen-test-certs.sh ./certs
-```
-
-This generates:
-- `ca.crt`, `ca.key` - Certificate Authority
-- `node1.crt`, `node1.key` - Node 1 certificate
-- `node2.crt`, `node2.key` - Node 2 certificate
-- `node3.crt`, `node3.key` - Node 3 certificate
-- `client.crt`, `client.key` - Client certificate
-
-### Running a Cluster with mTLS
-
-Terminal 1:
-```bash
+# Terminal 1
 cargo run -- --node-id 1 --port 50051 --dashboard-port 8081 \
-  --peers "2:127.0.0.1:50052,3:127.0.0.1:50053" \
-  --tls --ca-cert ./certs/ca.crt \
-  --cert ./certs/node1.crt --key ./certs/node1.key
-```
+  --peers "2:127.0.0.1:50052,3:127.0.0.1:50053"
 
-Terminal 2:
-```bash
+# Terminal 2
 cargo run -- --node-id 2 --port 50052 --dashboard-port 8082 \
-  --peers "1:127.0.0.1:50051,3:127.0.0.1:50053" \
-  --tls --ca-cert ./certs/ca.crt \
-  --cert ./certs/node2.crt --key ./certs/node2.key
-```
+  --peers "1:127.0.0.1:50051,3:127.0.0.1:50053"
 
-Terminal 3:
-```bash
+# Terminal 3
 cargo run -- --node-id 3 --port 50053 --dashboard-port 8083 \
-  --peers "1:127.0.0.1:50051,2:127.0.0.1:50052" \
-  --tls --ca-cert ./certs/ca.crt \
-  --cert ./certs/node3.crt --key ./certs/node3.key
+  --peers "1:127.0.0.1:50051,2:127.0.0.1:50052"
 ```
 
-### Using the CLI Client with TLS
+### Docker Compose
 
 ```bash
-cargo run --example submit_job -- \
-  --addr "https://127.0.0.1:50051" \
-  --ca-cert ./certs/ca.crt \
-  --cert ./certs/client.crt \
-  --key ./certs/client.key \
-  cluster
+docker-compose up --build        # Foreground
+docker-compose up --build -d     # Background
+docker-compose down              # Stop
 ```
 
-### Security Features
+**Endpoints:** Node 1: `localhost:50051` (gRPC), `localhost:8081` (dashboard)
 
-| Feature | Description |
-|---------|-------------|
-| mTLS | Both client and server authenticate via certificates |
-| CA Verification | All certificates must be signed by the cluster CA |
-| Encrypted Transport | All gRPC traffic is encrypted with TLS 1.2+ |
-
-### Development Mode
-
-For development, you can run without TLS:
+### With mTLS
 
 ```bash
-# Single node (no TLS warning)
-cargo run -- --node-id 1 --port 50051
+# Generate certificates
+./scripts/gen-test-certs.sh ./certs
 
-# Multi-node cluster (logs TLS warning)
-cargo run -- --node-id 1 --port 50051 --peers "2:127.0.0.1:50052"
+# Start with TLS (add to each node)
+--tls --ca-cert ./certs/ca.crt --cert ./certs/node1.crt --key ./certs/node1.key
 ```
 
-## Sandboxing
+## Usage Examples
 
-All jobs run inside isolated Docker containers for security. This prevents:
+### CLI Client
 
-- Filesystem access to host
-- Network access to other services
-- Privilege escalation attacks
-
-### Security Features
-
-Containers run with:
-
-| Feature | Setting | Purpose |
-|---------|---------|---------|
-| Network | `--network=none` | No network access |
-| Capabilities | `--cap-drop=ALL` | All Linux capabilities dropped |
-| Filesystem | `--read-only` | Read-only root filesystem |
-| Privileges | `--security-opt=no-new-privileges` | Prevent privilege escalation |
-| Memory | `--memory=256m` | Memory limit |
-| CPU | `--cpus=0.5` | CPU limit |
-
-### Requirements
-
-Docker must be installed and the user running nomad-lite must have permission to run containers:
-
+Base command (without TLS):
 ```bash
-# Ubuntu/Debian
-sudo apt install docker.io
-sudo usermod -aG docker $USER
-# Log out and back in for group changes to take effect
-
-# macOS
-brew install --cask docker
+cargo run --example submit_job -- --addr "http://127.0.0.1:50051" <command>
 ```
 
-### Custom Docker Image
-
-Use a different image if you need specific tools:
-
+With TLS:
 ```bash
-cargo run -- --node-id 1 --port 50051 --dashboard-port 8080 --image ubuntu:22.04
+cargo run --example submit_job -- --addr "https://127.0.0.1:50051" \
+  --ca-cert ./certs/ca.crt --cert ./certs/client.crt --key ./certs/client.key <command>
 ```
 
-### Submitting Jobs
+**Get cluster status:**
+```bash
+cargo run --example submit_job -- --addr "http://127.0.0.1:50051" cluster
+# Output:
+# Cluster Status:
+#   Leader: Node 1
+#   Term: 5
+#
+# Nodes:
+#   Node 1: 0.0.0.0:50051 (alive)
+#   Node 2: 127.0.0.1:50052 (alive)
+#   Node 3: 127.0.0.1:50053 (alive)
+```
 
+**Submit a job:**
 ```bash
 cargo run --example submit_job -- --addr "http://127.0.0.1:50051" submit --cmd "echo hello"
-cargo run --example submit_job -- --addr "http://127.0.0.1:50051" submit --cmd "cat /etc/os-release"
+# Output:
+# Job submitted successfully!
+# Job ID: ef319e40-c888-490d-8349-e9c05f78cf5a
 ```
 
-**Note:** Available commands depend on the Docker image. The default `alpine:latest` includes basic utilities. Use `--image` to specify a different image if you need specific tools.
-
-## Docker
-
-### Running with Docker Compose
-
-The easiest way to run a 3-node cluster is using Docker Compose.
-
-**1. Build and start the cluster:**
-
+**Get job status:**
 ```bash
-# Foreground (see logs in terminal)
-docker-compose up --build
-
-# Or detached mode (background)
-docker-compose up --build -d
+cargo run --example submit_job -- --addr "http://127.0.0.1:50051" status --job-id ef319e40-c888-490d-8349-e9c05f78cf5a
+# Output:
+# Job ID: ef319e40-c888-490d-8349-e9c05f78cf5a
+# Status: Completed
+# Output: hello
+# Assigned Worker: 1
 ```
 
-**2. Verify all nodes are running:**
-
+**List all jobs:**
 ```bash
-docker-compose ps
+cargo run --example submit_job -- --addr "http://127.0.0.1:50051" list
+# Output:
+# JOB ID                                   STATUS          WORKER     COMMAND
+# --------------------------------------------------------------------------------
+# ef319e40-c888-490d-8349-e9c05f78cf5a     Completed       1          echo hello
+# Total jobs: 1
 ```
 
-Expected output:
-
-```
-NAME          IMAGE              STATUS         PORTS
-nomad-node1   nomad-lite-node1   Up (healthy)   0.0.0.0:50051->50051, 0.0.0.0:8081->8080
-nomad-node2   nomad-lite-node2   Up             0.0.0.0:50052->50051, 0.0.0.0:8082->8080
-nomad-node3   nomad-lite-node3   Up             0.0.0.0:50053->50051, 0.0.0.0:8083->8080
-```
-
-**3. Check cluster status:**
-
+**Stream jobs (memory-efficient):**
 ```bash
-# Check each node (one will be "leader", others "follower")
+cargo run --example submit_job -- --addr "http://127.0.0.1:50051" list --stream
+```
+
+### REST API (Dashboard)
+
+**Get cluster status:**
+```bash
 curl http://localhost:8081/api/cluster
-curl http://localhost:8082/api/cluster
-curl http://localhost:8083/api/cluster
+# Response:
+# {
+#   "node_id": 1,
+#   "role": "leader",
+#   "current_term": 5,
+#   "leader_id": 1,
+#   "commit_index": 3,
+#   "last_applied": 3,
+#   "log_length": 3
+# }
 ```
 
-**4. Submit a job (to the leader):**
-
+**Submit a job:**
 ```bash
-# First find which node is the leader, then submit to that node
 curl -X POST http://localhost:8081/api/jobs \
   -H "Content-Type: application/json" \
-  -d '{"command": "echo hello from docker"}'
+  -d '{"command": "echo hello"}'
+# Response:
+# {
+#   "job_id": "ef319e40-c888-490d-8349-e9c05f78cf5a",
+#   "status": "pending"
+# }
 ```
 
-**5. List jobs:**
-
+**List all jobs:**
 ```bash
 curl http://localhost:8081/api/jobs
+# Response:
+# [
+#   {
+#     "id": "ef319e40-c888-490d-8349-e9c05f78cf5a",
+#     "command": "echo hello",
+#     "status": "completed",
+#     "executed_by": 1,
+#     "output": "hello\n",
+#     "error": null,
+#     "created_at": "2026-01-28T12:45:41.231558433+00:00",
+#     "completed_at": "2026-01-28T12:45:41.678341558+00:00"
+#   }
+# ]
 ```
 
-**6. View logs:**
+### gRPC API
 
-```bash
-# All nodes
-docker-compose logs -f
+| Method | Description | Leader Only |
+|--------|-------------|-------------|
+| `SubmitJob(command)` | Submit a job | Yes |
+| `GetJobStatus(job_id)` | Get job status | No |
+| `ListJobs()` | List jobs (paginated) | No |
+| `StreamJobs()` | Stream jobs | No |
+| `GetClusterStatus()` | Cluster info | Forwarded to leader |
 
-# Specific node
-docker-compose logs -f node1
-```
+## Security
 
-**7. Stop the cluster:**
+### mTLS
 
-```bash
-docker-compose down
-```
+All gRPC communication (node-to-node, client-to-node) can be secured with mutual TLS:
 
-### Endpoints
+- Both parties authenticate via certificates signed by cluster CA
+- All traffic encrypted with TLS 1.2+
+- Generate certs: `./scripts/gen-test-certs.sh ./certs`
 
-| Node | Dashboard | gRPC |
-|------|-----------|------|
-| Node 1 | <http://localhost:8081> | localhost:50051 |
-| Node 2 | <http://localhost:8082> | localhost:50052 |
-| Node 3 | <http://localhost:8083> | localhost:50053 |
+### Docker Sandboxing
 
-## Raft Implementation Details
+Jobs run in isolated containers with:
 
-### Election Timeout
+| Restriction | Setting |
+|-------------|---------|
+| Network | `--network=none` |
+| Capabilities | `--cap-drop=ALL` |
+| Filesystem | `--read-only` |
+| Privileges | `--security-opt=no-new-privileges` |
+| Memory | `--memory=256m` |
+| CPU | `--cpus=0.5` |
 
-- Randomized between 150-300ms
-- If no heartbeat received, node becomes candidate
-- Candidate requests votes from all peers
+## Raft Implementation
 
-### Heartbeats
-
-- Leader sends every 50ms
-- Contains log entries for replication
-- Followers reset election timeout on receipt
+### Timing
+- **Election timeout:** 150-300ms (randomized)
+- **Heartbeat interval:** 50ms
 
 ### Log Replication
-
 1. Client sends command to leader
-2. Leader appends to local log
-3. Leader replicates to followers via AppendEntries
-4. Once majority acknowledge, entry is committed
-5. Committed entries are applied to state machine
+2. Leader appends to log and replicates via `AppendEntries`
+3. Majority acknowledgment → committed
+4. Applied to state machine
 
 ### Safety Guarantees
-
-- Election safety: Only one leader per term
-- Leader append-only: Leader never overwrites log
-- Log matching: Logs with same index/term are identical
-- Leader completeness: Committed entries persist through elections
+- Election safety: One leader per term
+- Leader append-only: Never overwrites log
+- Log matching: Same index/term = identical
+- Leader completeness: Committed entries persist
 
 ### Cluster Sizing
 
-The cluster supports **any number of nodes**, not just 3. The majority is calculated dynamically:
+| Nodes | Majority | Fault Tolerance |
+|-------|----------|-----------------|
+| 3 | 2 | 1 failure |
+| 5 | 3 | 2 failures |
+| 7 | 4 | 3 failures |
 
-```rust
-let total_nodes = peers.len() + 1;  // peers + self
-let majority = (total_nodes / 2) + 1;
-```
-
-| Nodes | Majority Needed | Can Tolerate Failures |
-|-------|-----------------|----------------------|
-| 1     | 1               | 0                    |
-| 3     | 2               | 1                    |
-| 5     | 3               | 2                    |
-| 7     | 4               | 3                    |
-| 9     | 5               | 4                    |
-
-**Why use odd numbers?** Raft works best with odd-numbered clusters:
-
-- **3 nodes**: Tolerates 1 failure, needs 2 for majority
-- **4 nodes**: Still only tolerates 1 failure (needs 3 for majority) — no benefit over 3
-- **5 nodes**: Tolerates 2 failures, needs 3 for majority
-
-Even numbers don't improve fault tolerance but add network overhead.
-
-**Example: 5-Node Cluster**
-
-```bash
-# Node 1
-cargo run -- --node-id 1 --port 50051 \
-  --peers "2:127.0.0.1:50052,3:127.0.0.1:50053,4:127.0.0.1:50054,5:127.0.0.1:50055"
-
-# Node 2
-cargo run -- --node-id 2 --port 50052 \
-  --peers "1:127.0.0.1:50051,3:127.0.0.1:50053,4:127.0.0.1:50054,5:127.0.0.1:50055"
-
-# Nodes 3, 4, 5 follow the same pattern...
-```
+Use odd numbers—even numbers add overhead without improving fault tolerance.
 
 ## TODO
 
-### Critical (Security)
+### Security
+- [x] ~~No authentication~~ - mTLS implemented
+- [ ] CORS allows all origins
+- [ ] No input validation
+- [ ] Binds to 0.0.0.0
+- [ ] No rate limiting
 
-- [x] **~~No authentication~~** - ✅ mTLS implemented for gRPC. See [TLS / mTLS](#tls--mtls) section.
-- [ ] **CORS allows all origins** - `src/dashboard/mod.rs` uses permissive CORS. Configure specific origins.
-- [ ] **No input validation** - Commands accepted without validation. Add size limits and validation.
-- [ ] **Binds to 0.0.0.0** - Exposes services on all interfaces by default.
-- [ ] **No rate limiting** - No protection against job submission floods.
-
-### High Priority (Technical Debt)
-
-- [ ] **No state persistence** - All state in memory. Use sled or rocksdb for durability.
-- [ ] **No log compaction** - Log grows unbounded. Implement snapshots.
+### Technical Debt
+- [ ] No state persistence (in-memory only)
+- [ ] No log compaction (unbounded growth)
