@@ -152,11 +152,12 @@ message JobInfo {
 message GetClusterStatusRequest {}
 
 message GetClusterStatusResponse {
-    uint64 node_id = 1;
-    string role = 2;  // "leader", "follower", "candidate"
-    uint64 current_term = 3;
-    optional uint64 leader_id = 4;
-    repeated NodeInfo nodes = 5;
+    // Current Raft term
+    uint64 current_term = 1;
+    // Leader node ID (always set since this response comes from the leader)
+    uint64 leader_id = 2;
+    // All nodes in the cluster with their health status
+    repeated NodeInfo nodes = 3;
 }
 
 message NodeInfo {

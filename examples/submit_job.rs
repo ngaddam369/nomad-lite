@@ -217,16 +217,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .into_inner();
 
             println!("Cluster Status:");
-            println!("  Current Node: {}", response.node_id);
-            println!("  Role: {}", response.role);
+            println!("  Leader: Node {}", response.leader_id);
             println!("  Term: {}", response.current_term);
-            println!(
-                "  Leader: {}",
-                response
-                    .leader_id
-                    .map(|l| l.to_string())
-                    .unwrap_or_else(|| "unknown".to_string())
-            );
             println!();
             println!("Nodes:");
             for node in response.nodes {

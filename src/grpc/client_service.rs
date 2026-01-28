@@ -368,10 +368,8 @@ impl SchedulerService for ClientService {
         nodes.sort_by_key(|n| n.node_id);
 
         Ok(Response::new(GetClusterStatusResponse {
-            node_id: self.raft_node.id,
-            role: state.role.to_string(),
             current_term: state.current_term,
-            leader_id: state.leader_id,
+            leader_id: self.raft_node.id,
             nodes,
         }))
     }
