@@ -8,6 +8,7 @@ A distributed job scheduler with custom Raft consensus, similar to Nomad or Kube
 
 - **Custom Raft Consensus** - Leader election, log replication, and fault tolerance from scratch
 - **Distributed Scheduling** - Jobs executed across cluster with automatic failover
+- **Unified CLI** - Single binary for both server and client with automatic leader redirect
 - **mTLS Security** - Mutual TLS for all gRPC communication
 - **Docker Sandboxing** - Jobs run in isolated containers with restricted capabilities
 - **Web Dashboard** - Real-time monitoring and job management
@@ -24,13 +25,22 @@ A distributed job scheduler with custom Raft consensus, similar to Nomad or Kube
 ## Quick Start
 
 ```bash
-# Build
-cargo build --release
+# Build and install
+cargo install --path .
 
 # Run single node with dashboard
-cargo run -- --node-id 1 --port 50051 --dashboard-port 8080
+nomad-lite server --node-id 1 --port 50051 --dashboard-port 8080
 
 # Open http://localhost:8080
+
+# Submit a job (in another terminal)
+nomad-lite job submit "echo hello"
+
+# Check job status
+nomad-lite job status <job-id>
+
+# View cluster status
+nomad-lite cluster status
 ```
 
 ## Architecture
@@ -60,6 +70,8 @@ cargo run -- --node-id 1 --port 50051 --dashboard-port 8080
 
 ## Configuration
 
+### Server Options (`nomad-lite server`)
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--node-id` | 1 | Unique node identifier |
@@ -73,21 +85,31 @@ cargo run -- --node-id 1 --port 50051 --dashboard-port 8080
 | `--key` | - | Node private key path |
 | `--allow-insecure` | false | Run without TLS if certs fail |
 
+### Client Options (`nomad-lite job`, `nomad-lite cluster`)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-a, --addr` | `http://127.0.0.1:50051` | Server address |
+| `-o, --output` | `table` | Output format: `table` or `json` |
+| `--ca-cert` | - | CA certificate for TLS |
+| `--cert` | - | Client certificate for mTLS |
+| `--key` | - | Client private key for mTLS |
+
 ## Running a Cluster
 
 ### Local (3 nodes)
 
 ```bash
 # Terminal 1
-cargo run -- --node-id 1 --port 50051 --dashboard-port 8081 \
+nomad-lite server --node-id 1 --port 50051 --dashboard-port 8081 \
   --peers "2:127.0.0.1:50052,3:127.0.0.1:50053"
 
 # Terminal 2
-cargo run -- --node-id 2 --port 50052 --dashboard-port 8082 \
+nomad-lite server --node-id 2 --port 50052 --dashboard-port 8082 \
   --peers "1:127.0.0.1:50051,3:127.0.0.1:50053"
 
 # Terminal 3
-cargo run -- --node-id 3 --port 50053 --dashboard-port 8083 \
+nomad-lite server --node-id 3 --port 50053 --dashboard-port 8083 \
   --peers "1:127.0.0.1:50051,2:127.0.0.1:50052"
 ```
 
@@ -122,65 +144,105 @@ docker-compose down -v           # Stop and remove certs volume
 
 ## Usage Examples
 
-### CLI Client
+### CLI
 
-Base command (without TLS):
-```bash
-cargo run --example submit_job -- --addr "http://127.0.0.1:50051" <command>
+The `nomad-lite` binary provides both server and client functionality.
+
 ```
-
-With TLS:
-```bash
-cargo run --example submit_job -- --addr "https://127.0.0.1:50051" \
-  --ca-cert ./certs/ca.crt --cert ./certs/client.crt --key ./certs/client.key <command>
-```
-
-**Get cluster status:**
-```bash
-cargo run --example submit_job -- --addr "http://127.0.0.1:50051" cluster
-# Output:
-# Cluster Status:
-#   Leader: Node 1
-#   Term: 5
-#
-# Nodes:
-#   Node 1: 0.0.0.0:50051 (alive)
-#   Node 2: 127.0.0.1:50052 (alive)
-#   Node 3: 127.0.0.1:50053 (alive)
+nomad-lite
+├── server                        # Start a server node
+├── job                           # Job management
+│   ├── submit <COMMAND>         # Submit a new job
+│   ├── status <JOB_ID>          # Get job status
+│   └── list                     # List all jobs
+└── cluster                       # Cluster management
+    └── status                   # Get cluster info
 ```
 
 **Submit a job:**
 ```bash
-cargo run --example submit_job -- --addr "http://127.0.0.1:50051" submit --cmd "echo hello"
-# Output:
+nomad-lite job submit "echo hello"
 # Job submitted successfully!
 # Job ID: ef319e40-c888-490d-8349-e9c05f78cf5a
 ```
 
 **Get job status:**
 ```bash
-cargo run --example submit_job -- --addr "http://127.0.0.1:50051" status --job-id ef319e40-c888-490d-8349-e9c05f78cf5a
-# Output:
-# Job ID: ef319e40-c888-490d-8349-e9c05f78cf5a
-# Status: Completed
-# Output: hello
+nomad-lite job status ef319e40-c888-490d-8349-e9c05f78cf5a
+# Job ID:          ef319e40-c888-490d-8349-e9c05f78cf5a
+# Status:          COMPLETED
+# Exit Code:       0
 # Assigned Worker: 1
+# Executed By:     1
+# Output:
+#   hello
 ```
 
 **List all jobs:**
 ```bash
-cargo run --example submit_job -- --addr "http://127.0.0.1:50051" list
-# Output:
-# JOB ID                                   STATUS          WORKER     COMMAND
-# --------------------------------------------------------------------------------
-# ef319e40-c888-490d-8349-e9c05f78cf5a     Completed       1          echo hello
-# Total jobs: 1
+nomad-lite job list
+# JOB ID                                 STATUS       WORKER   COMMAND
+# ------------------------------------------------------------------------------
+# ef319e40-c888-490d-8349-e9c05f78cf5a   COMPLETED    1        echo hello
+#
+# Showing 1 of 1 jobs
 ```
 
-**Stream jobs (memory-efficient):**
+**List jobs with pagination:**
 ```bash
-cargo run --example submit_job -- --addr "http://127.0.0.1:50051" list --stream
+nomad-lite job list --page-size 50 --all  # Fetch all pages
+nomad-lite job list --stream              # Use streaming API
 ```
+
+**Get cluster status:**
+```bash
+nomad-lite cluster status
+# Cluster Status
+# ========================================
+# Term:   5
+# Leader: Node 1
+#
+# Nodes:
+# ID       ADDRESS                   STATUS
+# ---------------------------------------------
+# 1        0.0.0.0:50051             [+] alive
+# 2        127.0.0.1:50052           [+] alive
+# 3        127.0.0.1:50053           [+] alive
+```
+
+**JSON output:**
+```bash
+nomad-lite job -o json list
+nomad-lite cluster -o json status
+```
+
+**Connect to a different server:**
+```bash
+nomad-lite job -a http://192.168.1.10:50051 list
+```
+
+**With mTLS:**
+```bash
+nomad-lite job submit "echo hello" \
+  --addr "https://127.0.0.1:50051" \
+  --ca-cert ./certs/ca.crt \
+  --cert ./certs/client.crt \
+  --key ./certs/client.key
+```
+
+### Automatic Leader Redirect
+
+Job submissions require the leader node. The CLI automatically redirects to the leader if you connect to a follower:
+
+```bash
+# Connect to follower node (port 50052), CLI auto-redirects to leader
+nomad-lite job -a http://127.0.0.1:50052 submit "echo hello"
+# Redirecting to leader at 127.0.0.1:50051...
+# Job submitted successfully!
+# Job ID: 9839ec5f-4ff7-4308-bba9-5c67dad99677
+```
+
+This allows you to submit jobs to any node in the cluster without needing to know which node is the current leader.
 
 ### REST API (Dashboard)
 
