@@ -68,36 +68,95 @@ nomad-lite cluster status
 
 **Components:** Raft Module (consensus) → Scheduler (job assignment, leader only) → Worker (execution) → gRPC Server (client/inter-node) → Dashboard (web UI)
 
-## Configuration
-
-### Server Options (`nomad-lite server`)
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--node-id` | 1 | Unique node identifier |
-| `--port` | 50051 | gRPC server port |
-| `--dashboard-port` | - | Web dashboard port (optional) |
-| `--peers` | "" | Peer addresses: `"id:host:port,..."` |
-| `--image` | alpine:latest | Docker image for jobs |
-| `--tls` | false | Enable mTLS |
-| `--ca-cert` | - | CA certificate path |
-| `--cert` | - | Node certificate path |
-| `--key` | - | Node private key path |
-| `--allow-insecure` | false | Run without TLS if certs fail |
-
-### Client Options (`nomad-lite job`, `nomad-lite cluster`)
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-a, --addr` | `http://127.0.0.1:50051` | Server address |
-| `-o, --output` | `table` | Output format: `table` or `json` |
-| `--ca-cert` | - | CA certificate for TLS |
-| `--cert` | - | Client certificate for mTLS |
-| `--key` | - | Client private key for mTLS |
-
 ## Running a Cluster
 
-### Local (3 nodes)
+### Option 1: Docker Compose (Recommended)
+
+The easiest way to run a 3-node cluster. Choose between production (mTLS) or development (no TLS) setup.
+
+#### Production Setup (mTLS)
+
+```bash
+# Start cluster (certificates auto-generated)
+docker-compose up --build
+
+# Stop cluster
+docker-compose down
+
+# Stop and remove certificates
+docker-compose down -v
+```
+
+**Using the CLI with mTLS:**
+```bash
+# Check cluster status
+nomad-lite cluster status \
+  --addr "https://127.0.0.1:50051" \
+  --ca-cert /tmp/nomad-certs/ca.crt \
+  --cert /tmp/nomad-certs/client.crt \
+  --key /tmp/nomad-certs/client.key
+
+# Find the leader node from cluster status output, then submit to it
+# Example: if Node 3 is leader, use port 50053
+nomad-lite job submit "echo hello from mTLS" \
+  --addr "https://127.0.0.1:50053" \
+  --ca-cert /tmp/nomad-certs/ca.crt \
+  --cert /tmp/nomad-certs/client.crt \
+  --key /tmp/nomad-certs/client.key
+
+# Get job status
+nomad-lite job status <job-id> \
+  --addr "https://127.0.0.1:50051" \
+  --ca-cert /tmp/nomad-certs/ca.crt \
+  --cert /tmp/nomad-certs/client.crt \
+  --key /tmp/nomad-certs/client.key
+
+# List all jobs
+nomad-lite job list \
+  --addr "https://127.0.0.1:50051" \
+  --ca-cert /tmp/nomad-certs/ca.crt \
+  --cert /tmp/nomad-certs/client.crt \
+  --key /tmp/nomad-certs/client.key
+```
+
+#### Development Setup (No TLS)
+
+```bash
+# Start cluster
+docker-compose -f docker-compose.dev.yml up --build
+
+# Stop cluster
+docker-compose -f docker-compose.dev.yml down
+```
+
+**Using the CLI without TLS:**
+```bash
+# Check cluster status
+nomad-lite cluster status --addr "http://127.0.0.1:50051"
+
+# Find the leader node from cluster status output, then submit to it
+# Example: if Node 1 is leader, use port 50051
+nomad-lite job submit "echo hello" --addr "http://127.0.0.1:50051"
+
+# Get job status
+nomad-lite job status <job-id> --addr "http://127.0.0.1:50051"
+
+# List all jobs
+nomad-lite job list --addr "http://127.0.0.1:50051"
+```
+
+**Cluster Endpoints:**
+| Node | gRPC | Dashboard |
+|------|------|-----------|
+| 1 | `localhost:50051` | `localhost:8081` |
+| 2 | `localhost:50052` | `localhost:8082` |
+| 3 | `localhost:50053` | `localhost:8083` |
+
+> **Note:** Auto-redirect doesn't work with Docker Compose because nodes report internal addresses (e.g., `node1:50051`) that aren't accessible from the host. Always check which node is leader using `cluster status` and connect directly to it for job submissions.
+
+### Option 2: Local Multi-Node
+
+Run nodes directly without Docker:
 
 ```bash
 # Terminal 1
@@ -113,38 +172,16 @@ nomad-lite server --node-id 3 --port 50053 --dashboard-port 8083 \
   --peers "1:127.0.0.1:50051,2:127.0.0.1:50052"
 ```
 
-### Docker Compose
-
+**With mTLS:**
 ```bash
-# With mTLS (recommended, certs auto-generated)
-docker-compose up --build
-
-# Without TLS (development only)
-docker-compose -f docker-compose.dev.yml up --build
-
-# Stop and cleanup
-docker-compose down              # Stop cluster
-docker-compose down -v           # Stop and remove certs volume
-```
-
-**Endpoints:**
-- Node 1: `localhost:50051` (gRPC), `localhost:8081` (dashboard)
-- Node 2: `localhost:50052` (gRPC), `localhost:8082` (dashboard)
-- Node 3: `localhost:50053` (gRPC), `localhost:8083` (dashboard)
-
-### With mTLS (Local)
-
-```bash
-# Generate certificates
+# Generate certificates first
 ./scripts/gen-test-certs.sh ./certs
 
-# Start with TLS (add to each node)
+# Add TLS flags to each node
 --tls --ca-cert ./certs/ca.crt --cert ./certs/node1.crt --key ./certs/node1.key
 ```
 
-## Usage Examples
-
-### CLI
+## CLI Reference
 
 The `nomad-lite` binary provides both server and client functionality.
 
@@ -158,6 +195,33 @@ nomad-lite
 └── cluster                       # Cluster management
     └── status                   # Get cluster info
 ```
+
+### Server Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--node-id` | 1 | Unique node identifier |
+| `--port` | 50051 | gRPC server port |
+| `--dashboard-port` | - | Web dashboard port (optional) |
+| `--peers` | "" | Peer addresses: `"id:host:port,..."` |
+| `--image` | alpine:latest | Docker image for jobs |
+| `--tls` | false | Enable mTLS |
+| `--ca-cert` | - | CA certificate path |
+| `--cert` | - | Node certificate path |
+| `--key` | - | Node private key path |
+| `--allow-insecure` | false | Run without TLS if certs fail |
+
+### Client Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-a, --addr` | `http://127.0.0.1:50051` | Server address |
+| `-o, --output` | `table` | Output format: `table` or `json` |
+| `--ca-cert` | - | CA certificate for TLS |
+| `--cert` | - | Client certificate for mTLS |
+| `--key` | - | Client private key for mTLS |
+
+### Command Examples
 
 **Submit a job:**
 ```bash
@@ -216,33 +280,16 @@ nomad-lite job -o json list
 nomad-lite cluster -o json status
 ```
 
-**Connect to a different server:**
-```bash
-nomad-lite job -a http://192.168.1.10:50051 list
-```
-
-**With mTLS:**
-```bash
-nomad-lite job submit "echo hello" \
-  --addr "https://127.0.0.1:50051" \
-  --ca-cert ./certs/ca.crt \
-  --cert ./certs/client.crt \
-  --key ./certs/client.key
-```
-
 ### Automatic Leader Redirect
 
-Job submissions require the leader node. The CLI automatically redirects to the leader if you connect to a follower:
+For local clusters (non-Docker), the CLI automatically redirects to the leader if you connect to a follower:
 
 ```bash
 # Connect to follower node (port 50052), CLI auto-redirects to leader
 nomad-lite job -a http://127.0.0.1:50052 submit "echo hello"
 # Redirecting to leader at 127.0.0.1:50051...
 # Job submitted successfully!
-# Job ID: 9839ec5f-4ff7-4308-bba9-5c67dad99677
 ```
-
-This allows you to submit jobs to any node in the cluster without needing to know which node is the current leader.
 
 ### REST API (Dashboard)
 

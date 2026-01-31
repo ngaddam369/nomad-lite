@@ -10,6 +10,7 @@ services:
     build: .
     container_name: nomad-node1
     command:
+      - server
       - --node-id
       - "1"
       - --port
@@ -35,6 +36,7 @@ services:
     build: .
     container_name: nomad-node2
     command:
+      - server
       - --node-id
       - "2"
       - --port
@@ -57,6 +59,7 @@ services:
     build: .
     container_name: nomad-node3
     command:
+      - server
       - --node-id
       - "3"
       - --port

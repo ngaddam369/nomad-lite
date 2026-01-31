@@ -18,7 +18,6 @@ RUN cargo build --release 2>/dev/null || true
 
 # Copy actual source code
 COPY src/ src/
-COPY examples/ examples/
 
 # Build the actual application
 RUN touch src/main.rs && cargo build --release

@@ -678,10 +678,7 @@ async fn handle_job_list(
             if all_jobs.is_empty() {
                 println!("No jobs found.");
             } else {
-                println!(
-                    "{:<38} {:<12} {:<8} COMMAND",
-                    "JOB ID", "STATUS", "WORKER"
-                );
+                println!("{:<38} {:<12} {:<8} COMMAND", "JOB ID", "STATUS", "WORKER");
                 println!("{}", "-".repeat(78));
 
                 for job in &all_jobs {
