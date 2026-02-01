@@ -77,46 +77,50 @@ The easiest way to run a 3-node cluster. Choose between production (mTLS) or dev
 #### Production Setup (mTLS)
 
 ```bash
-# Start cluster (certificates auto-generated)
+# Generate certificates (one-time setup)
+./scripts/gen-test-certs.sh ./certs
+
+# Start cluster
 docker-compose up --build
 
 # Stop cluster
 docker-compose down
-
-# Stop and remove certificates
-docker-compose down -v
 ```
 
 **Using the CLI with mTLS:**
 ```bash
 # Check cluster status
-nomad-lite cluster status \
+nomad-lite cluster \
   --addr "https://127.0.0.1:50051" \
-  --ca-cert /tmp/nomad-certs/ca.crt \
-  --cert /tmp/nomad-certs/client.crt \
-  --key /tmp/nomad-certs/client.key
+  --ca-cert ./certs/ca.crt \
+  --cert ./certs/client.crt \
+  --key ./certs/client.key \
+  status
 
 # Find the leader node from cluster status output, then submit to it
 # Example: if Node 3 is leader, use port 50053
-nomad-lite job submit "echo hello from mTLS" \
+nomad-lite job \
   --addr "https://127.0.0.1:50053" \
-  --ca-cert /tmp/nomad-certs/ca.crt \
-  --cert /tmp/nomad-certs/client.crt \
-  --key /tmp/nomad-certs/client.key
+  --ca-cert ./certs/ca.crt \
+  --cert ./certs/client.crt \
+  --key ./certs/client.key \
+  submit "echo hello from mTLS"
 
 # Get job status
-nomad-lite job status <job-id> \
+nomad-lite job \
   --addr "https://127.0.0.1:50051" \
-  --ca-cert /tmp/nomad-certs/ca.crt \
-  --cert /tmp/nomad-certs/client.crt \
-  --key /tmp/nomad-certs/client.key
+  --ca-cert ./certs/ca.crt \
+  --cert ./certs/client.crt \
+  --key ./certs/client.key \
+  status <job-id>
 
 # List all jobs
-nomad-lite job list \
+nomad-lite job \
   --addr "https://127.0.0.1:50051" \
-  --ca-cert /tmp/nomad-certs/ca.crt \
-  --cert /tmp/nomad-certs/client.crt \
-  --key /tmp/nomad-certs/client.key
+  --ca-cert ./certs/ca.crt \
+  --cert ./certs/client.crt \
+  --key ./certs/client.key \
+  list
 ```
 
 #### Development Setup (No TLS)
@@ -132,17 +136,17 @@ docker-compose -f docker-compose.dev.yml down
 **Using the CLI without TLS:**
 ```bash
 # Check cluster status
-nomad-lite cluster status --addr "http://127.0.0.1:50051"
+nomad-lite cluster --addr "http://127.0.0.1:50051" status
 
 # Find the leader node from cluster status output, then submit to it
 # Example: if Node 1 is leader, use port 50051
-nomad-lite job submit "echo hello" --addr "http://127.0.0.1:50051"
+nomad-lite job --addr "http://127.0.0.1:50051" submit "echo hello"
 
 # Get job status
-nomad-lite job status <job-id> --addr "http://127.0.0.1:50051"
+nomad-lite job --addr "http://127.0.0.1:50051" status <job-id>
 
 # List all jobs
-nomad-lite job list --addr "http://127.0.0.1:50051"
+nomad-lite job --addr "http://127.0.0.1:50051" list
 ```
 
 **Cluster Endpoints:**

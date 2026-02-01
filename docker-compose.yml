@@ -1,10 +1,12 @@
 # Nomad-Lite Docker Compose Configuration
 #
+# Prerequisites:
+#   ./scripts/gen-test-certs.sh ./certs   # Generate certificates first
+#
 # Usage:
 #   docker-compose up --build        # Start cluster with mTLS
 #   docker-compose up --build -d     # Start in background
 #   docker-compose down              # Stop cluster
-#   docker-compose down -v           # Stop and remove volumes (including certs)
 #
 # Endpoints:
 #   Node 1: localhost:50051 (gRPC), localhost:8081 (dashboard)
@@ -12,24 +14,6 @@
 #   Node 3: localhost:50053 (gRPC), localhost:8083 (dashboard)
 
 services:
-  # Init container that generates TLS certificates on first run
-  cert-gen:
-    build: .
-    container_name: nomad-cert-gen
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        if [ ! -f /certs/ca.crt ]; then
-          echo "Generating TLS certificates..."
-          /app/gen-test-certs.sh /certs
-        else
-          echo "Certificates already exist, skipping generation"
-        fi
-    volumes:
-      - certs:/certs
-    networks:
-      - nomad-net
-
   node1:
     build: .
     container_name: nomad-node1
@@ -55,12 +39,9 @@ services:
       - "8081:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - certs:/certs:ro
+      - ./certs:/certs:ro
     networks:
       - nomad-net
-    depends_on:
-      cert-gen:
-        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "true"]
       interval: 10s
@@ -92,12 +73,10 @@ services:
       - "8082:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - certs:/certs:ro
+      - ./certs:/certs:ro
     networks:
       - nomad-net
     depends_on:
-      cert-gen:
-        condition: service_completed_successfully
       node1:
         condition: service_started
 
@@ -126,20 +105,14 @@ services:
       - "8083:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - certs:/certs:ro
+      - ./certs:/certs:ro
     networks:
       - nomad-net
     depends_on:
-      cert-gen:
-        condition: service_completed_successfully
       node1:
         condition: service_started
       node2:
         condition: service_started
-
-volumes:
-  certs:
-    driver: local
 
 networks:
   nomad-net:
