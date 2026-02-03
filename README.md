@@ -24,106 +24,99 @@ A distributed job scheduler with custom Raft consensus, similar to Nomad or Kube
 
 ## Architecture
 
+### Cluster Overview
+
 ```mermaid
-graph TB
-    subgraph "Client Layer"
-        CLI[CLI Client<br/>nomad-lite job/cluster]
-        REST[REST API Client<br/>HTTP requests]
-        GRPC_CLIENT[gRPC Client<br/>Direct gRPC calls]
+graph LR
+    subgraph Clients
+        CLI[CLI]
+        REST[REST]
+        GRPC[gRPC]
     end
 
-    subgraph "Cluster - 3 Nodes with Raft Consensus"
-        subgraph "Node 1 - Leader"
-            direction TB
-            N1_GRPC[gRPC Server<br/>:50051<br/>mTLS enabled]
-            N1_DASH[Dashboard<br/>:8081<br/>Web UI + REST]
-            N1_RAFT[Raft Module<br/>Leader]
-            N1_SCHED[Scheduler<br/>ACTIVE]
-            N1_WORKER[Worker<br/>Job Executor]
-            N1_STATE[State Machine<br/>Job Queue]
-            N1_LOG[Raft Log<br/>In-Memory]
-            
-            N1_GRPC --> N1_RAFT
-            N1_DASH --> N1_GRPC
-            N1_RAFT --> N1_LOG
-            N1_RAFT --> N1_STATE
-            N1_STATE --> N1_SCHED
-            N1_SCHED --> N1_WORKER
-        end
+    subgraph Cluster[3-Node Raft Cluster]
+        N1[Node 1<br/>gRPC :50051<br/>Dashboard :8081]
+        N2[Node 2<br/>gRPC :50052<br/>Dashboard :8082]
+        N3[Node 3<br/>gRPC :50053<br/>Dashboard :8083]
 
-        subgraph "Node 2 - Follower"
-            direction TB
-            N2_GRPC[gRPC Server<br/>:50052<br/>mTLS enabled]
-            N2_DASH[Dashboard<br/>:8082<br/>Web UI + REST]
-            N2_RAFT[Raft Module<br/>Follower]
-            N2_SCHED[Scheduler<br/>STANDBY]
-            N2_WORKER[Worker<br/>Job Executor]
-            N2_STATE[State Machine<br/>Job Queue]
-            N2_LOG[Raft Log<br/>In-Memory]
-            
-            N2_GRPC --> N2_RAFT
-            N2_DASH --> N2_GRPC
-            N2_RAFT --> N2_LOG
-            N2_RAFT --> N2_STATE
-            N2_STATE --> N2_SCHED
-            N2_SCHED --> N2_WORKER
-        end
-
-        subgraph "Node 3 - Follower"
-            direction TB
-            N3_GRPC[gRPC Server<br/>:50053<br/>mTLS enabled]
-            N3_DASH[Dashboard<br/>:8083<br/>Web UI + REST]
-            N3_RAFT[Raft Module<br/>Follower]
-            N3_SCHED[Scheduler<br/>STANDBY]
-            N3_WORKER[Worker<br/>Job Executor]
-            N3_STATE[State Machine<br/>Job Queue]
-            N3_LOG[Raft Log<br/>In-Memory]
-            
-            N3_GRPC --> N3_RAFT
-            N3_DASH --> N3_GRPC
-            N3_RAFT --> N3_LOG
-            N3_RAFT --> N3_STATE
-            N3_STATE --> N3_SCHED
-            N3_SCHED --> N3_WORKER
-        end
+        N1 <-->|Raft RPCs| N2
+        N1 <-->|Raft RPCs| N3
+        N2 <-->|Raft RPCs| N3
     end
 
-    subgraph "Docker Environment"
-        D1[Docker Container<br/>alpine:latest<br/>--network=none<br/>--read-only]
-        D2[Docker Container<br/>alpine:latest<br/>--network=none<br/>--read-only]
-        D3[Docker Container<br/>alpine:latest<br/>--network=none<br/>--read-only]
+    subgraph Docker[Docker Containers]
+        D1[Container]
+        D2[Container]
+        D3[Container]
     end
 
-    %% Client to Cluster connections
-    CLI -.->|1. Submit Job| N1_GRPC
-    CLI -.->|Auto-redirect if follower| N2_GRPC
-    REST -.->|HTTP POST /api/jobs| N1_DASH
-    GRPC_CLIENT -.->|SubmitJob RPC| N1_GRPC
+    CLI -->|Submit to leader| N1
+    REST -->|HTTP API| N1
+    GRPC -->|gRPC API| N1
 
-    %% Raft Consensus - Heartbeats (50ms interval)
-    N1_RAFT <-.->|AppendEntries<br/>Heartbeat 50ms| N2_RAFT
-    N1_RAFT <-.->|AppendEntries<br/>Heartbeat 50ms| N3_RAFT
-    N2_RAFT <-.->|RequestVote<br/>Election timeout 150-300ms| N3_RAFT
+    N1 -->|docker run| D1
+    N2 -->|docker run| D2
+    N3 -->|docker run| D3
 
-    %% Worker to Docker connections
-    N1_WORKER -->|Execute Job| D1
-    N2_WORKER -->|Execute Job| D2
-    N3_WORKER -->|Execute Job| D3
-
-    %% Styling
-    classDef leader fill:#90EE90,stroke:#006400,stroke-width:3px
+    classDef leader fill:#90EE90,stroke:#006400,stroke-width:2px
     classDef follower fill:#FFE4B5,stroke:#FF8C00,stroke-width:2px
-    classDef client fill:#87CEEB,stroke:#4682B4,stroke-width:2px
-    classDef docker fill:#E6E6FA,stroke:#9370DB,stroke-width:2px
-
-    class N1_GRPC,N1_DASH,N1_RAFT,N1_SCHED,N1_WORKER,N1_STATE,N1_LOG leader
-    class N2_GRPC,N2_DASH,N2_RAFT,N2_SCHED,N2_WORKER,N2_STATE,N2_LOG follower
-    class N3_GRPC,N3_DASH,N3_RAFT,N3_SCHED,N3_WORKER,N3_STATE,N3_LOG follower
-    class CLI,REST,GRPC_CLIENT client
-    class D1,D2,D3 docker
+    class N1 leader
+    class N2,N3 follower
 ```
 
-**Components:** Raft Module (consensus) → Scheduler (job assignment, leader only) → Worker (execution) → gRPC Server (client/inter-node) → Dashboard (web UI)
+### Node Internal Architecture
+
+```mermaid
+graph TB
+    subgraph External[External APIs]
+        GRPC[gRPC Server<br/>SubmitJob, GetStatus, ListJobs]
+        DASH[Dashboard<br/>REST API + Web UI]
+    end
+
+    subgraph Core[Core Components]
+        RAFT[Raft Module<br/>Leader Election<br/>Log Replication]
+        LOG[Raft Log<br/>In-Memory]
+    end
+
+    subgraph Loops[Background Loops]
+        SCHED[Scheduler Loop<br/>100ms interval<br/>Applies commits<br/>Assigns jobs on leader]
+        WORKER[Worker Loop<br/>500ms interval<br/>Executes assigned jobs]
+    end
+
+    QUEUE[Job Queue<br/>State Machine]
+    DOCKER[Docker Container<br/>Sandboxed Execution]
+
+    %% External to Core
+    GRPC -->|Commands| RAFT
+    DASH -->|Commands| RAFT
+    DASH -->|Query| QUEUE
+
+    %% Core
+    RAFT <--> LOG
+
+    %% Loops subscribe/interact
+    SCHED -.->|Subscribe commits| RAFT
+    SCHED -->|Apply entries & Assign jobs| QUEUE
+    WORKER -->|Poll & Update| QUEUE
+    WORKER -->|Execute| DOCKER
+
+    classDef api fill:#87CEEB,stroke:#4682B4
+    classDef core fill:#90EE90,stroke:#006400
+    classDef loop fill:#FFE4B5,stroke:#FF8C00
+    classDef state fill:#E6E6FA,stroke:#9370DB
+
+    class GRPC,DASH api
+    class RAFT,LOG core
+    class SCHED,WORKER loop
+    class QUEUE,DOCKER state
+```
+
+**Key Points:**
+
+- Every node runs all components (gRPC, Dashboard, Raft, Scheduler, Worker)
+- Only the leader's Scheduler Loop assigns jobs; followers just apply committed entries
+- Workers poll the Job Queue locally - no RPC needed for job dispatch
+- Job output is stored only on the executing node (fetched via `InternalService` RPC when queried)
 
 ## Data Flow
 
@@ -135,73 +128,85 @@ sequenceDiagram
     participant N2 as Node 2 (Follower)<br/>Raft Module
     participant N3 as Node 3 (Follower)<br/>Raft Module
     participant Log1 as Node 1<br/>Raft Log
-    participant State1 as Node 1<br/>State Machine
-    participant Sched as Scheduler<br/>(Leader Only)
-    participant Worker as Worker 2<br/>(Selected Node)
+    participant Queue1 as Node 1<br/>Job Queue
+    participant Sched as Scheduler Loop<br/>(Leader Only)
+    participant Worker as Worker Loop<br/>(Node 2)
     participant Docker as Docker Container
 
     Note over Client,Docker: Job Submission Flow (Write Operation)
 
     Client->>N1: 1. SubmitJob("echo hello")
-    N1->>Raft1: 2. Propose command
-    Raft1->>Log1: 3. Append to local log<br/>(index=N, term=T)
-    
+    N1->>N1: 2. Create Job object<br/>job_id = uuid
+    N1->>Raft1: 3. Propose SubmitJob command
+    Raft1->>Log1: 4. Append to local log<br/>(index=N, term=T)
+
     par Replicate to Followers
-        Raft1->>N2: 4a. AppendEntries RPC<br/>(log entry)
-        Raft1->>N3: 4b. AppendEntries RPC<br/>(log entry)
+        Raft1->>N2: 5a. AppendEntries RPC<br/>(log entry)
+        Raft1->>N3: 5b. AppendEntries RPC<br/>(log entry)
     end
 
-    N2-->>Raft1: 5a. ACK (success)
-    N3-->>Raft1: 5b. ACK (success)
+    N2-->>Raft1: 6a. ACK (success)
+    N3-->>Raft1: 6b. ACK (success)
 
     Note over Raft1: Majority reached (2/3)
 
-    Raft1->>State1: 6. Commit log entry<br/>Apply to state machine
-    State1->>State1: 7. Create Job object<br/>Status: PENDING
-    State1->>Sched: 8. Notify new job
-    
-    Sched->>Sched: 9. Select worker node<br/>Round-robin: Node 2
-    Sched->>State1: 10. Update Job<br/>assigned_worker=2
-    
-    Note over Raft1,N3: Leader replicates assignment<br/>via AppendEntries
-    
-    Sched->>Worker: 11. Execute job via gRPC<br/>ExecuteJob(job_id, "echo hello")
-    
-    Worker->>Docker: 12. docker run alpine:latest<br/>--network=none --read-only<br/>--memory=256m --cpus=0.5<br/>echo hello
-    
-    Docker-->>Worker: 13. Output: "hello\n"<br/>Exit code: 0
-    
-    Worker->>State1: 14. Update job status<br/>Status: COMPLETED<br/>Output: "hello"
-    
-    State1->>Raft1: 15. Replicate completion
-    Raft1->>N2: AppendEntries (job completion)
-    Raft1->>N3: AppendEntries (job completion)
-    
-    N1-->>Client: 16. Response: Job submitted<br/>job_id: uuid
+    Raft1-->>N1: 7. Commit confirmed
+    N1->>Queue1: 8. Add job to queue<br/>Status: PENDING
+    N1-->>Client: 9. Response: job_id
+
+    Note over Client,Docker: Job Assignment Flow (Leader Scheduler Loop - polls every 100ms)
+
+    Sched->>Raft1: 10. Subscribe to commits
+    Raft1-->>Sched: 11. Commit notification
+    Sched->>Queue1: 12. Apply committed entry<br/>(idempotent add)
+
+    Sched->>Queue1: 13. Check pending jobs
+    Queue1-->>Sched: 14. Job found (PENDING)
+    Sched->>Sched: 15. Select least-loaded worker<br/>(Node 2)
+    Sched->>Queue1: 16. Assign job to worker 2<br/>Status: RUNNING
+
+    Note over Client,Docker: Job Execution Flow (Worker Loop - polls every 500ms)
+
+    Worker->>Queue1: 17. Poll for assigned jobs
+    Queue1-->>Worker: 18. Job assigned to me<br/>(RUNNING status)
+
+    Worker->>Docker: 19. docker run alpine:latest<br/>--network=none --read-only<br/>--memory=256m --cpus=0.5<br/>echo hello
+
+    Docker-->>Worker: 20. Output: "hello\n"<br/>Exit code: 0
+
+    Worker->>Queue1: 21. Update local job result<br/>Status: COMPLETED<br/>Output stored locally
+
+    Note over Worker,Raft1: If this node is leader, replicate status
+
+    Worker->>Raft1: 22. Propose UpdateJobStatus
+    Raft1->>N2: 23. AppendEntries (status update)
+    Raft1->>N3: 23. AppendEntries (status update)
 
     Note over Client,Docker: Job Status Query Flow (Read Operation)
 
-    Client->>N1: 17. GetJobStatus(job_id)
-    N1->>State1: 18. Query state machine
-    State1-->>N1: 19. Job details
-    N1-->>Client: 20. Response: COMPLETED<br/>Output: "hello"
+    Client->>N1: 24. GetJobStatus(job_id)
+    N1->>Queue1: 25. Query job queue
+    Queue1-->>N1: 26. Job metadata<br/>(executed_by: Node 2)
+    N1->>N2: 27. GetJobOutput RPC<br/>(fetch from executor)
+    N2-->>N1: 28. Output: "hello"
+    N1-->>Client: 29. Response: COMPLETED<br/>Output: "hello"
 
     Note over Client,Docker: Leader Election Flow (Failure Scenario)
 
     Note over Raft1: Leader crashes! ❌
-    
-    Note over N2,N3: Heartbeat timeout (150-300ms)
-    
+
+    Note over N2,N3: Election timeout (150-300ms)<br/>No heartbeat received
+
     N2->>N2: Election timeout triggered
     N2->>N2: Increment term, become candidate
     N2->>N3: RequestVote RPC (term=T+1)
     N3-->>N2: VoteGranted
-    
+
     Note over N2: Won election with majority
-    
+
     N2->>N2: Become Leader
-    N2->>Sched: Activate Scheduler
-    
+    Note over N2: Scheduler loop now active<br/>(assigns jobs)
+
     Note over N2,N3: Node 2 now leads cluster
 ```
 
