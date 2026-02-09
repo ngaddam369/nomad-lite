@@ -17,6 +17,9 @@ target
 # Contains private keys - never commit to version control
 certs/
 
+# Local TODO tracking
+TODO.md
+
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore

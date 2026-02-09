@@ -610,17 +610,3 @@ Jobs run in isolated containers with:
 
 Use odd numbers—even numbers add overhead without improving fault tolerance.
 
-## TODO
-
-### Security
-
-- [x] ~~No authentication~~ - mTLS implemented
-- [ ] CORS allows all origins
-- [ ] No input validation
-- [ ] Binds to 0.0.0.0
-- [ ] No rate limiting
-
-### Technical Debt
-
-- [ ] No state persistence (in-memory only)
-- [ ] No log compaction (unbounded growth)
