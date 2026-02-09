@@ -10,8 +10,8 @@ use nomad_lite::config::{NodeConfig, PeerConfig, SandboxConfig, TlsConfig};
 use nomad_lite::node::Node;
 use nomad_lite::proto::scheduler_service_client::SchedulerServiceClient;
 use nomad_lite::proto::{
-    GetClusterStatusRequest, GetJobStatusRequest, JobStatus, ListJobsRequest, StreamJobsRequest,
-    SubmitJobRequest,
+    GetClusterStatusRequest, GetJobStatusRequest, GetRaftLogEntriesRequest, JobStatus,
+    ListJobsRequest, StreamJobsRequest, SubmitJobRequest,
 };
 use nomad_lite::tls::TlsIdentity;
 
@@ -46,6 +46,15 @@ enum Commands {
 
         #[command(subcommand)]
         command: ClusterCommands,
+    },
+
+    /// Raft log commands
+    Log {
+        #[command(flatten)]
+        client: ClientArgs,
+
+        #[command(subcommand)]
+        command: LogCommands,
     },
 }
 
@@ -175,6 +184,24 @@ enum ClusterCommands {
 }
 
 // =============================================================================
+// Log Commands
+// =============================================================================
+
+#[derive(clap::Subcommand, Debug)]
+enum LogCommands {
+    /// List Raft log entries
+    List {
+        /// Starting index (1-indexed, 0 means from beginning)
+        #[arg(long, default_value = "0")]
+        start_index: u64,
+
+        /// Maximum number of entries to return
+        #[arg(long, default_value = "100")]
+        limit: u32,
+    },
+}
+
+// =============================================================================
 // JSON Output Types
 // =============================================================================
 
@@ -225,6 +252,22 @@ struct ClusterStatusOutput {
     current_term: u64,
     leader_id: u64,
     nodes: Vec<NodeInfoOutput>,
+}
+
+#[derive(Serialize)]
+struct RaftLogEntryOutput {
+    index: u64,
+    term: u64,
+    command_type: String,
+    command_details: String,
+    is_committed: bool,
+}
+
+#[derive(Serialize)]
+struct RaftLogOutput {
+    entries: Vec<RaftLogEntryOutput>,
+    commit_index: u64,
+    last_log_index: u64,
 }
 
 // =============================================================================
@@ -757,6 +800,109 @@ async fn handle_cluster_status(
     Ok(())
 }
 
+async fn handle_log_list(
+    client: &mut SchedulerServiceClient<Channel>,
+    start_index: u64,
+    limit: u32,
+    output_format: &OutputFormat,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let response = client
+        .get_raft_log_entries(GetRaftLogEntriesRequest { start_index, limit })
+        .await?
+        .into_inner();
+
+    // Convert proto entries to output format
+    let entries: Vec<RaftLogEntryOutput> = response
+        .entries
+        .into_iter()
+        .map(|entry| {
+            let (command_type, command_details) = format_command(&entry.command);
+            RaftLogEntryOutput {
+                index: entry.index,
+                term: entry.term,
+                command_type,
+                command_details,
+                is_committed: entry.is_committed,
+            }
+        })
+        .collect();
+
+    match output_format {
+        OutputFormat::Json => {
+            let output = RaftLogOutput {
+                entries,
+                commit_index: response.commit_index,
+                last_log_index: response.last_log_index,
+            };
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+        OutputFormat::Table => {
+            if entries.is_empty() {
+                println!("No log entries found.");
+            } else {
+                println!("Raft Log Entries");
+                println!("{}", "=".repeat(80));
+                println!(
+                    "Commit Index: {}  |  Last Log Index: {}",
+                    response.commit_index, response.last_log_index
+                );
+                println!();
+                println!(
+                    "{:<6} {:<6} {:<10} {:<20} DETAILS",
+                    "INDEX", "TERM", "COMMITTED", "TYPE"
+                );
+                println!("{}", "-".repeat(80));
+
+                for entry in &entries {
+                    let committed = if entry.is_committed { "yes" } else { "no" };
+                    // Truncate details if too long
+                    let details = if entry.command_details.len() > 30 {
+                        format!("{}...", &entry.command_details[..27])
+                    } else {
+                        entry.command_details.clone()
+                    };
+                    println!(
+                        "{:<6} {:<6} {:<10} {:<20} {}",
+                        entry.index, entry.term, committed, entry.command_type, details
+                    );
+                }
+                println!();
+                println!("Showing {} entries", entries.len());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn format_command(command: &Option<nomad_lite::proto::Command>) -> (String, String) {
+    use nomad_lite::proto::command::CommandType;
+
+    match command {
+        Some(cmd) => match &cmd.command_type {
+            Some(CommandType::SubmitJob(submit)) => (
+                "SubmitJob".to_string(),
+                format!("job_id={}, cmd={}", submit.job_id, submit.command),
+            ),
+            Some(CommandType::UpdateJobStatus(update)) => {
+                let status = match nomad_lite::proto::JobStatus::try_from(update.status) {
+                    Ok(s) => format!("{:?}", s),
+                    Err(_) => "Unknown".to_string(),
+                };
+                (
+                    "UpdateJobStatus".to_string(),
+                    format!("job_id={}, status={}", update.job_id, status),
+                )
+            }
+            Some(CommandType::RegisterWorker(register)) => (
+                "RegisterWorker".to_string(),
+                format!("worker_id={}", register.worker_id),
+            ),
+            None => ("Noop".to_string(), String::new()),
+        },
+        None => ("Noop".to_string(), String::new()),
+    }
+}
+
 // =============================================================================
 // Main Entry Point
 // =============================================================================
@@ -797,6 +943,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match command {
                 ClusterCommands::Status => {
                     handle_cluster_status(&mut grpc_client, &client.output).await?;
+                }
+            }
+        }
+        Commands::Log { client, command } => {
+            let channel = create_client_channel(&client).await?;
+            let mut grpc_client = SchedulerServiceClient::new(channel);
+
+            match command {
+                LogCommands::List { start_index, limit } => {
+                    handle_log_list(&mut grpc_client, start_index, limit, &client.output).await?;
                 }
             }
         }

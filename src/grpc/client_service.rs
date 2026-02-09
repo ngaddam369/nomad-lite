@@ -13,9 +13,11 @@ use crate::proto::scheduler_service_client::SchedulerServiceClient;
 use crate::proto::scheduler_service_server::SchedulerService;
 use crate::proto::{
     GetClusterStatusRequest, GetClusterStatusResponse, GetJobOutputRequest, GetJobStatusRequest,
-    GetJobStatusResponse, JobInfo, JobStatus as ProtoJobStatus, ListJobsRequest, ListJobsResponse,
-    NodeInfo, StreamJobsRequest, SubmitJobRequest, SubmitJobResponse,
+    GetJobStatusResponse, GetRaftLogEntriesRequest, GetRaftLogEntriesResponse, JobInfo,
+    JobStatus as ProtoJobStatus, ListJobsRequest, ListJobsResponse, NodeInfo, RaftLogEntryInfo,
+    StreamJobsRequest, SubmitJobRequest, SubmitJobResponse,
 };
+use crate::raft::rpc::log_entry_to_proto;
 use crate::raft::{Command, RaftNode};
 use crate::scheduler::{Job, JobQueue, JobStatus};
 use crate::tls::TlsIdentity;
@@ -420,6 +422,69 @@ impl SchedulerService for ClientService {
         let stream = ReceiverStream::new(rx);
         Ok(Response::new(Box::pin(stream) as Self::StreamJobsStream))
     }
+
+    async fn get_raft_log_entries(
+        &self,
+        request: Request<GetRaftLogEntriesRequest>,
+    ) -> Result<Response<GetRaftLogEntriesResponse>, Status> {
+        // Forward to leader if not the leader
+        if !self.raft_node.is_leader().await {
+            return self.forward_raft_log_entries_to_leader(request).await;
+        }
+
+        let req = request.into_inner();
+
+        // Parse pagination parameters
+        let limit = if req.limit == 0 {
+            100 // Default limit
+        } else {
+            req.limit.min(1000) // Max 1000
+        } as usize;
+
+        let state = self.raft_node.state.read().await;
+        let commit_index = state.commit_index;
+        let last_log_index = state.last_log_index();
+
+        // Determine start index (1-indexed, 0 means from beginning)
+        let start_index = if req.start_index == 0 {
+            1
+        } else {
+            req.start_index
+        };
+
+        // Convert 1-indexed start_index to 0-indexed array position
+        // Log entries are 1-indexed, so entry at index N is at position N-1
+        let start_pos = if start_index == 0 {
+            0
+        } else {
+            (start_index - 1) as usize
+        };
+
+        // Efficiently slice the log directly instead of filtering O(n)
+        let entries: Vec<RaftLogEntryInfo> = if start_pos >= state.log.len() {
+            Vec::new()
+        } else {
+            let end_pos = (start_pos + limit).min(state.log.len());
+            state.log[start_pos..end_pos]
+                .iter()
+                .map(|entry| {
+                    let proto_entry = log_entry_to_proto(entry);
+                    RaftLogEntryInfo {
+                        index: entry.index,
+                        term: entry.term,
+                        command: proto_entry.command,
+                        is_committed: entry.index <= commit_index,
+                    }
+                })
+                .collect()
+        };
+
+        Ok(Response::new(GetRaftLogEntriesResponse {
+            entries,
+            commit_index,
+            last_log_index,
+        }))
+    }
 }
 
 impl ClientService {
@@ -437,6 +502,27 @@ impl ClientService {
 
         let response = client
             .get_cluster_status(GetClusterStatusRequest {})
+            .await
+            .map_err(|e| Status::unavailable(format!("Leader request failed: {}", e)))?;
+
+        Ok(response)
+    }
+
+    /// Forward raft log entries request to the current leader
+    async fn forward_raft_log_entries_to_leader(
+        &self,
+        request: Request<GetRaftLogEntriesRequest>,
+    ) -> Result<Response<GetRaftLogEntriesResponse>, Status> {
+        let leader_id = self
+            .raft_node
+            .get_leader_id()
+            .await
+            .ok_or_else(|| Status::unavailable("Leader unknown, please retry later"))?;
+
+        let mut client = self.get_client(leader_id).await?;
+
+        let response = client
+            .get_raft_log_entries(request.into_inner())
             .await
             .map_err(|e| Status::unavailable(format!("Leader request failed: {}", e)))?;
 

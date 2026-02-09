@@ -89,6 +89,9 @@ service SchedulerService {
 
     // Get cluster status (leader, nodes, etc.)
     rpc GetClusterStatus(GetClusterStatusRequest) returns (GetClusterStatusResponse);
+
+    // Get Raft log entries
+    rpc GetRaftLogEntries(GetRaftLogEntriesRequest) returns (GetRaftLogEntriesResponse);
 }
 
 message SubmitJobRequest {
@@ -164,6 +167,29 @@ message NodeInfo {
     uint64 node_id = 1;
     string address = 2;
     bool is_alive = 3;
+}
+
+message GetRaftLogEntriesRequest {
+    // Starting index (1-indexed, 0 means from beginning)
+    uint64 start_index = 1;
+    // Maximum number of entries to return (default: 100, max: 1000)
+    uint32 limit = 2;
+}
+
+message GetRaftLogEntriesResponse {
+    // Log entries in index order
+    repeated RaftLogEntryInfo entries = 1;
+    // Current commit index
+    uint64 commit_index = 2;
+    // Last log index (total entries in log)
+    uint64 last_log_index = 3;
+}
+
+message RaftLogEntryInfo {
+    uint64 index = 1;
+    uint64 term = 2;
+    Command command = 3;
+    bool is_committed = 4;
 }
 
 // ==================== Internal Node-to-Node API ====================

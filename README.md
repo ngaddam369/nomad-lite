@@ -363,8 +363,10 @@ nomad-lite
 │   ├── submit <COMMAND>         # Submit a new job
 │   ├── status <JOB_ID>          # Get job status
 │   └── list                     # List all jobs
-└── cluster                       # Cluster management
-    └── status                   # Get cluster info
+├── cluster                       # Cluster management
+│   └── status                   # Get cluster info
+└── log                           # Raft log inspection
+    └── list                     # View committed log entries
 ```
 
 ### Server Options
@@ -450,11 +452,36 @@ nomad-lite cluster status
 # 3        127.0.0.1:50053           [+] alive
 ```
 
+**View Raft log entries:**
+
+```bash
+nomad-lite log list
+# Raft Log Entries
+# ================================================================================
+# Commit Index: 3  |  Last Log Index: 3
+#
+# INDEX  TERM   COMMITTED  TYPE                 DETAILS
+# --------------------------------------------------------------------------------
+# 1      1      yes        Noop
+# 2      1      yes        SubmitJob            job_id=ef319e40-..., cmd=echo hello
+# 3      1      yes        UpdateJobStatus      job_id=ef319e40-..., status=Completed
+#
+# Showing 3 entries
+```
+
+**View log entries with pagination:**
+
+```bash
+nomad-lite log list --start-index 1 --limit 50  # Start from index 1, max 50 entries
+nomad-lite log list --start-index 10            # Start from index 10
+```
+
 **JSON output:**
 
 ```bash
 nomad-lite job -o json list
 nomad-lite cluster -o json status
+nomad-lite log -o json list
 ```
 
 ### Automatic Leader Redirect
@@ -527,6 +554,7 @@ curl http://localhost:8081/api/jobs
 | `ListJobs()` | List jobs (paginated) | No |
 | `StreamJobs()` | Stream jobs | No |
 | `GetClusterStatus()` | Cluster info | Forwarded to leader |
+| `GetRaftLogEntries()` | View Raft log entries | Forwarded to leader |
 
 ## Security
 

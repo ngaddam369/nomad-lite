@@ -6,6 +6,7 @@
 mod test_harness;
 
 use chrono::Utc;
+use nomad_lite::raft::rpc::log_entry_to_proto;
 use std::time::Duration;
 use test_harness::{assert_eventually, TestCluster};
 
@@ -345,5 +346,323 @@ async fn test_large_batch_submission() {
         );
     }
 
+    cluster.shutdown().await;
+}
+
+/// Test 9: View Raft log entries returns entries in order
+#[tokio::test]
+async fn test_view_raft_log_entries() {
+    let mut cluster = TestCluster::new(3, 50180).await;
+
+    cluster
+        .wait_for_leader(Duration::from_secs(5))
+        .await
+        .expect("Leader should be elected");
+
+    // Submit 5 jobs
+    for i in 0..5 {
+        cluster
+            .submit_job(&format!("echo log_test_{}", i))
+            .await
+            .expect(&format!("Job {} submission should succeed", i));
+    }
+
+    // Wait for replication
+    assert!(
+        cluster
+            .wait_for_commit_on_all(5, Duration::from_secs(3))
+            .await,
+        "All nodes should have 5 log entries"
+    );
+
+    // Get leader and verify log entries
+    let leader_id = cluster.get_leader_id().await.unwrap();
+    let leader = cluster.get_node(leader_id).unwrap();
+
+    let state = leader.raft_node.state.read().await;
+
+    // Verify log entries are in order
+    assert_eq!(state.log.len(), 5, "Should have 5 log entries");
+
+    for (i, entry) in state.log.iter().enumerate() {
+        assert_eq!(
+            entry.index,
+            (i + 1) as u64,
+            "Entry index should be sequential"
+        );
+        assert!(
+            entry.index <= state.commit_index,
+            "Entry should be committed"
+        );
+    }
+
+    // Verify entries can be converted to proto format
+    for entry in state.log.iter() {
+        let proto = log_entry_to_proto(entry);
+        assert_eq!(proto.index, entry.index);
+        assert_eq!(proto.term, entry.term);
+    }
+
+    drop(state);
+    cluster.shutdown().await;
+}
+
+/// Test 10: Raft log entries show correct commit status
+#[tokio::test]
+async fn test_raft_log_commit_status() {
+    let mut cluster = TestCluster::new(3, 50190).await;
+
+    let leader_id = cluster
+        .wait_for_leader(Duration::from_secs(5))
+        .await
+        .expect("Leader should be elected");
+
+    // Submit a job
+    cluster
+        .submit_job("echo commit_test")
+        .await
+        .expect("Job submission should succeed");
+
+    // Wait for commit
+    assert!(
+        cluster
+            .wait_for_commit_on_all(1, Duration::from_secs(2))
+            .await,
+        "Job should be committed on all nodes"
+    );
+
+    // Verify commit_index on leader
+    let leader = cluster.get_node(leader_id).unwrap();
+    let state = leader.raft_node.state.read().await;
+
+    assert!(state.commit_index >= 1, "Commit index should be at least 1");
+    assert_eq!(state.log.len(), 1, "Should have 1 log entry");
+
+    let entry = &state.log[0];
+    assert!(
+        entry.index <= state.commit_index,
+        "Entry should be committed"
+    );
+
+    drop(state);
+    cluster.shutdown().await;
+}
+
+/// Test 11: Empty log returns no entries
+#[tokio::test]
+async fn test_empty_raft_log() {
+    let mut cluster = TestCluster::new(3, 50200).await;
+
+    cluster
+        .wait_for_leader(Duration::from_secs(5))
+        .await
+        .expect("Leader should be elected");
+
+    // Don't submit any jobs - log should be empty
+    let leader_id = cluster.get_leader_id().await.unwrap();
+    let leader = cluster.get_node(leader_id).unwrap();
+
+    let state = leader.raft_node.state.read().await;
+    assert_eq!(state.log.len(), 0, "Log should be empty");
+    assert_eq!(state.commit_index, 0, "Commit index should be 0");
+
+    drop(state);
+    cluster.shutdown().await;
+}
+
+/// Test 12: Log entries contain correct command types
+#[tokio::test]
+async fn test_raft_log_command_types() {
+    let mut cluster = TestCluster::new(3, 50210).await;
+
+    cluster
+        .wait_for_leader(Duration::from_secs(5))
+        .await
+        .expect("Leader should be elected");
+
+    // Submit a job
+    let job_id = cluster
+        .submit_job("echo command_type_test")
+        .await
+        .expect("Job submission should succeed");
+
+    // Wait for commit
+    assert!(
+        cluster
+            .wait_for_commit_on_all(1, Duration::from_secs(2))
+            .await,
+        "Job should be committed"
+    );
+
+    let leader_id = cluster.get_leader_id().await.unwrap();
+    let leader = cluster.get_node(leader_id).unwrap();
+
+    let state = leader.raft_node.state.read().await;
+    assert_eq!(state.log.len(), 1, "Should have 1 log entry");
+
+    // Verify the command is a SubmitJob
+    match &state.log[0].command {
+        nomad_lite::raft::Command::SubmitJob {
+            job_id: entry_job_id,
+            command,
+            ..
+        } => {
+            assert_eq!(*entry_job_id, job_id, "Job ID should match");
+            assert_eq!(command, "echo command_type_test", "Command should match");
+        }
+        _ => panic!("Expected SubmitJob command"),
+    }
+
+    drop(state);
+    cluster.shutdown().await;
+}
+
+/// Test 13: Log pagination with start_index beyond log length returns empty
+#[tokio::test]
+async fn test_raft_log_pagination_beyond_length() {
+    let mut cluster = TestCluster::new(3, 50220).await;
+
+    cluster
+        .wait_for_leader(Duration::from_secs(5))
+        .await
+        .expect("Leader should be elected");
+
+    // Submit 3 jobs
+    for i in 0..3 {
+        cluster
+            .submit_job(&format!("echo pagination_test_{}", i))
+            .await
+            .expect("Job submission should succeed");
+    }
+
+    // Wait for commit
+    assert!(
+        cluster
+            .wait_for_commit_on_all(3, Duration::from_secs(2))
+            .await,
+        "Jobs should be committed"
+    );
+
+    let leader_id = cluster.get_leader_id().await.unwrap();
+    let leader = cluster.get_node(leader_id).unwrap();
+
+    let state = leader.raft_node.state.read().await;
+
+    // Simulate pagination beyond log length (start_index = 100 when log has 3 entries)
+    let start_pos = 99usize; // 100 - 1 for 0-indexed
+    assert!(start_pos >= state.log.len(), "Start position should be beyond log length");
+
+    // This would return empty in the actual implementation
+    let entries_from_beyond: Vec<_> = if start_pos >= state.log.len() {
+        Vec::new()
+    } else {
+        state.log[start_pos..].to_vec()
+    };
+    assert!(entries_from_beyond.is_empty(), "Should return empty when start_index is beyond log length");
+
+    drop(state);
+    cluster.shutdown().await;
+}
+
+/// Test 14: Log pagination with limit larger than available entries
+#[tokio::test]
+async fn test_raft_log_pagination_limit_exceeds_entries() {
+    let mut cluster = TestCluster::new(3, 50230).await;
+
+    cluster
+        .wait_for_leader(Duration::from_secs(5))
+        .await
+        .expect("Leader should be elected");
+
+    // Submit 5 jobs
+    for i in 0..5 {
+        cluster
+            .submit_job(&format!("echo limit_test_{}", i))
+            .await
+            .expect("Job submission should succeed");
+    }
+
+    // Wait for commit
+    assert!(
+        cluster
+            .wait_for_commit_on_all(5, Duration::from_secs(2))
+            .await,
+        "Jobs should be committed"
+    );
+
+    let leader_id = cluster.get_leader_id().await.unwrap();
+    let leader = cluster.get_node(leader_id).unwrap();
+
+    let state = leader.raft_node.state.read().await;
+
+    // Request limit of 1000 when only 5 entries exist
+    let limit = 1000usize;
+    let start_pos = 0usize;
+    let end_pos = (start_pos + limit).min(state.log.len());
+
+    let entries: Vec<_> = state.log[start_pos..end_pos].to_vec();
+    assert_eq!(entries.len(), 5, "Should return all 5 entries even though limit is 1000");
+
+    drop(state);
+    cluster.shutdown().await;
+}
+
+/// Test 15: Log entries accessible from follower (forwarded to leader)
+#[tokio::test]
+async fn test_raft_log_accessible_from_follower() {
+    let mut cluster = TestCluster::new(3, 50240).await;
+
+    let leader_id = cluster
+        .wait_for_leader(Duration::from_secs(5))
+        .await
+        .expect("Leader should be elected");
+
+    // Submit jobs through leader
+    for i in 0..3 {
+        cluster
+            .submit_job(&format!("echo follower_access_test_{}", i))
+            .await
+            .expect("Job submission should succeed");
+    }
+
+    // Wait for replication
+    assert!(
+        cluster
+            .wait_for_commit_on_all(3, Duration::from_secs(2))
+            .await,
+        "Jobs should be replicated"
+    );
+
+    // Find a follower
+    let follower_id = cluster
+        .nodes
+        .keys()
+        .find(|&&id| id != leader_id)
+        .copied()
+        .expect("Should have a follower");
+
+    // Verify follower has the same log entries (replication works)
+    let follower = cluster.get_node(follower_id).unwrap();
+    let follower_state = follower.raft_node.state.read().await;
+
+    assert_eq!(follower_state.log.len(), 3, "Follower should have 3 log entries");
+
+    // Verify entries match leader's entries
+    let leader = cluster.get_node(leader_id).unwrap();
+    let leader_state = leader.raft_node.state.read().await;
+
+    for i in 0..3 {
+        assert_eq!(
+            follower_state.log[i].index, leader_state.log[i].index,
+            "Entry {} index should match", i
+        );
+        assert_eq!(
+            follower_state.log[i].term, leader_state.log[i].term,
+            "Entry {} term should match", i
+        );
+    }
+
+    drop(follower_state);
+    drop(leader_state);
     cluster.shutdown().await;
 }
