@@ -550,7 +550,10 @@ async fn test_raft_log_pagination_beyond_length() {
 
     // Simulate pagination beyond log length (start_index = 100 when log has 3 entries)
     let start_pos = 99usize; // 100 - 1 for 0-indexed
-    assert!(start_pos >= state.log.len(), "Start position should be beyond log length");
+    assert!(
+        start_pos >= state.log.len(),
+        "Start position should be beyond log length"
+    );
 
     // This would return empty in the actual implementation
     let entries_from_beyond: Vec<_> = if start_pos >= state.log.len() {
@@ -558,7 +561,10 @@ async fn test_raft_log_pagination_beyond_length() {
     } else {
         state.log[start_pos..].to_vec()
     };
-    assert!(entries_from_beyond.is_empty(), "Should return empty when start_index is beyond log length");
+    assert!(
+        entries_from_beyond.is_empty(),
+        "Should return empty when start_index is beyond log length"
+    );
 
     drop(state);
     cluster.shutdown().await;
@@ -601,7 +607,11 @@ async fn test_raft_log_pagination_limit_exceeds_entries() {
     let end_pos = (start_pos + limit).min(state.log.len());
 
     let entries: Vec<_> = state.log[start_pos..end_pos].to_vec();
-    assert_eq!(entries.len(), 5, "Should return all 5 entries even though limit is 1000");
+    assert_eq!(
+        entries.len(),
+        5,
+        "Should return all 5 entries even though limit is 1000"
+    );
 
     drop(state);
     cluster.shutdown().await;
@@ -645,7 +655,11 @@ async fn test_raft_log_accessible_from_follower() {
     let follower = cluster.get_node(follower_id).unwrap();
     let follower_state = follower.raft_node.state.read().await;
 
-    assert_eq!(follower_state.log.len(), 3, "Follower should have 3 log entries");
+    assert_eq!(
+        follower_state.log.len(),
+        3,
+        "Follower should have 3 log entries"
+    );
 
     // Verify entries match leader's entries
     let leader = cluster.get_node(leader_id).unwrap();
@@ -654,11 +668,13 @@ async fn test_raft_log_accessible_from_follower() {
     for i in 0..3 {
         assert_eq!(
             follower_state.log[i].index, leader_state.log[i].index,
-            "Entry {} index should match", i
+            "Entry {} index should match",
+            i
         );
         assert_eq!(
             follower_state.log[i].term, leader_state.log[i].term,
-            "Entry {} term should match", i
+            "Entry {} term should match",
+            i
         );
     }
 
