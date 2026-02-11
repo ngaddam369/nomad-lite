@@ -1,0 +1,10 @@
+[default]
+exclude-files = [
+    "src/main.rs",
+    "src/node.rs",
+    "src/lib.rs",
+    "src/grpc/server.rs",
+    "src/grpc/mod.rs",
+    "src/worker/mod.rs",
+    "src/raft/mod.rs",
+]

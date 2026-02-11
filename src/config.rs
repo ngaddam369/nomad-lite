@@ -116,3 +116,116 @@ impl NodeConfig {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sandbox_config_default() {
+        let cfg = SandboxConfig::default();
+        assert_eq!(cfg.image, "alpine:latest");
+        assert!(cfg.network_disabled);
+        assert_eq!(cfg.memory_limit.as_deref(), Some("256m"));
+        assert_eq!(cfg.cpu_limit.as_deref(), Some("0.5"));
+    }
+
+    #[test]
+    fn tls_config_default() {
+        let cfg = TlsConfig::default();
+        assert!(!cfg.enabled);
+        assert!(cfg.ca_cert_path.is_none());
+        assert!(cfg.cert_path.is_none());
+        assert!(cfg.key_path.is_none());
+        assert!(!cfg.allow_insecure);
+    }
+
+    #[test]
+    fn tls_config_is_complete_when_all_paths_set() {
+        let cfg = TlsConfig {
+            enabled: true,
+            ca_cert_path: Some(PathBuf::from("/ca.pem")),
+            cert_path: Some(PathBuf::from("/cert.pem")),
+            key_path: Some(PathBuf::from("/key.pem")),
+            allow_insecure: false,
+        };
+        assert!(cfg.is_complete());
+    }
+
+    #[test]
+    fn tls_config_is_not_complete_when_disabled() {
+        let cfg = TlsConfig {
+            enabled: false,
+            ca_cert_path: Some(PathBuf::from("/ca.pem")),
+            cert_path: Some(PathBuf::from("/cert.pem")),
+            key_path: Some(PathBuf::from("/key.pem")),
+            allow_insecure: false,
+        };
+        assert!(!cfg.is_complete());
+    }
+
+    #[test]
+    fn tls_config_is_not_complete_when_path_missing() {
+        let base = TlsConfig {
+            enabled: true,
+            ca_cert_path: Some(PathBuf::from("/ca.pem")),
+            cert_path: Some(PathBuf::from("/cert.pem")),
+            key_path: Some(PathBuf::from("/key.pem")),
+            allow_insecure: false,
+        };
+
+        let mut cfg = base.clone();
+        cfg.ca_cert_path = None;
+        assert!(!cfg.is_complete());
+
+        let mut cfg = base.clone();
+        cfg.cert_path = None;
+        assert!(!cfg.is_complete());
+
+        let mut cfg = base;
+        cfg.key_path = None;
+        assert!(!cfg.is_complete());
+    }
+
+    #[test]
+    fn node_config_default() {
+        let cfg = NodeConfig::default();
+        assert_eq!(cfg.node_id, 1);
+        assert_eq!(cfg.listen_addr.to_string(), "127.0.0.1:50051");
+        assert!(cfg.peers.is_empty());
+        assert_eq!(cfg.election_timeout_min_ms, 150);
+        assert_eq!(cfg.election_timeout_max_ms, 300);
+        assert_eq!(cfg.heartbeat_interval_ms, 50);
+    }
+
+    #[test]
+    fn node_config_new() {
+        let addr: SocketAddr = "10.0.0.1:9000".parse().unwrap();
+        let cfg = NodeConfig::new(42, addr);
+        assert_eq!(cfg.node_id, 42);
+        assert_eq!(cfg.listen_addr, addr);
+        assert!(cfg.peers.is_empty());
+    }
+
+    #[test]
+    fn node_config_with_peer() {
+        let cfg = NodeConfig::default()
+            .with_peer(2, "127.0.0.1:50052".to_string())
+            .with_peer(3, "127.0.0.1:50053".to_string());
+        assert_eq!(cfg.peers.len(), 2);
+        assert_eq!(cfg.peers[0].node_id, 2);
+        assert_eq!(cfg.peers[0].addr, "127.0.0.1:50052");
+        assert_eq!(cfg.peers[1].node_id, 3);
+        assert_eq!(cfg.peers[1].addr, "127.0.0.1:50053");
+    }
+
+    #[test]
+    fn peer_config_fields() {
+        let peer = PeerConfig {
+            node_id: 5,
+            addr: "host.example.com:8080".to_string(),
+        };
+        assert_eq!(peer.node_id, 5);
+        assert_eq!(peer.addr, "host.example.com:8080");
+    }
+}
