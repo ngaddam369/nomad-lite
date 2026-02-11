@@ -1,4 +1,7 @@
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
+
+use futures::FutureExt;
 use tonic::{Request, Response, Status};
 
 use crate::proto::raft_service_server::RaftService;
@@ -29,8 +32,19 @@ impl RaftService for ClusterService {
             "Received RequestVote"
         );
 
-        let response = self.raft_node.handle_vote_request(req).await;
-        Ok(Response::new(response))
+        let node = self.raft_node.clone();
+        let result = AssertUnwindSafe(async { node.handle_vote_request(req).await })
+            .catch_unwind()
+            .await;
+
+        match result {
+            Ok(Ok(response)) => Ok(Response::new(response)),
+            Ok(Err(e)) => Err(Status::internal(format!("RequestVote handler error: {e}"))),
+            Err(_) => {
+                tracing::error!("Panic in RequestVote handler");
+                Err(Status::internal("Internal error in RequestVote handler"))
+            }
+        }
     }
 
     async fn append_entries(
@@ -47,7 +61,20 @@ impl RaftService for ClusterService {
             "Received AppendEntries"
         );
 
-        let response = self.raft_node.handle_append_entries(req).await;
-        Ok(Response::new(response))
+        let node = self.raft_node.clone();
+        let result = AssertUnwindSafe(async { node.handle_append_entries(req).await })
+            .catch_unwind()
+            .await;
+
+        match result {
+            Ok(Ok(response)) => Ok(Response::new(response)),
+            Ok(Err(e)) => Err(Status::internal(format!(
+                "AppendEntries handler error: {e}"
+            ))),
+            Err(_) => {
+                tracing::error!("Panic in AppendEntries handler");
+                Err(Status::internal("Internal error in AppendEntries handler"))
+            }
+        }
     }
 }

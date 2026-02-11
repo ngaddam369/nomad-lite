@@ -9,7 +9,11 @@ use crate::scheduler::JobStatus;
 use uuid::Uuid;
 
 /// Handle RequestVote RPC
-pub fn handle_request_vote(state: &mut RaftState, req: &VoteRequest, my_id: u64) -> VoteResponse {
+pub fn handle_request_vote(
+    state: &mut RaftState,
+    req: &VoteRequest,
+    my_id: u64,
+) -> Result<VoteResponse, String> {
     // If request term is greater, update our term and become follower
     if req.term > state.current_term {
         state.become_follower(req.term);
@@ -38,10 +42,10 @@ pub fn handle_request_vote(state: &mut RaftState, req: &VoteRequest, my_id: u64)
         "RequestVote response"
     );
 
-    VoteResponse {
+    Ok(VoteResponse {
         term: state.current_term,
         vote_granted,
-    }
+    })
 }
 
 /// Handle AppendEntries RPC
@@ -49,7 +53,7 @@ pub fn handle_append_entries(
     state: &mut RaftState,
     req: &AppendEntriesRequest,
     my_id: u64,
-) -> AppendEntriesResponse {
+) -> Result<AppendEntriesResponse, String> {
     // If request term is greater, update our term and become follower
     if req.term > state.current_term {
         state.become_follower(req.term);
@@ -57,11 +61,11 @@ pub fn handle_append_entries(
 
     // Reject if request term is less than our current term
     if req.term < state.current_term {
-        return AppendEntriesResponse {
+        return Ok(AppendEntriesResponse {
             term: state.current_term,
             success: false,
             match_index: state.last_log_index(),
-        };
+        });
     }
 
     // Valid AppendEntries from leader - reset to follower if we're a candidate
@@ -75,21 +79,21 @@ pub fn handle_append_entries(
         match state.get_entry(req.prev_log_index) {
             None => {
                 // We don't have the entry at prev_log_index
-                return AppendEntriesResponse {
+                return Ok(AppendEntriesResponse {
                     term: state.current_term,
                     success: false,
                     match_index: state.last_log_index(),
-                };
+                });
             }
             Some(entry) => {
                 if entry.term != req.prev_log_term {
                     // Term mismatch - truncate and reject
                     state.log.truncate((req.prev_log_index - 1) as usize);
-                    return AppendEntriesResponse {
+                    return Ok(AppendEntriesResponse {
                         term: state.current_term,
                         success: false,
                         match_index: state.last_log_index(),
-                    };
+                    });
                 }
             }
         }
@@ -97,8 +101,22 @@ pub fn handle_append_entries(
 
     // Append new entries (if any)
     if !req.entries.is_empty() {
-        let new_entries: Vec<LogEntry> =
-            req.entries.iter().filter_map(proto_to_log_entry).collect();
+        let new_entries: Vec<LogEntry> = req
+            .entries
+            .iter()
+            .filter_map(|proto| match proto_to_log_entry(proto) {
+                Some(entry) => Some(entry),
+                None => {
+                    tracing::warn!(
+                        node_id = my_id,
+                        term = proto.term,
+                        index = proto.index,
+                        "Skipping malformed log entry"
+                    );
+                    None
+                }
+            })
+            .collect();
 
         let start_index = req.prev_log_index + 1;
         state.truncate_and_append(start_index, new_entries);
@@ -116,11 +134,11 @@ pub fn handle_append_entries(
         state.commit_index = std::cmp::min(req.leader_commit, state.last_log_index());
     }
 
-    AppendEntriesResponse {
+    Ok(AppendEntriesResponse {
         term: state.current_term,
         success: true,
         match_index: state.last_log_index(),
-    }
+    })
 }
 
 /// Convert protobuf LogEntry to internal LogEntry

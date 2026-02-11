@@ -167,7 +167,8 @@ impl RaftState {
             command,
         };
         self.log.push(entry);
-        self.log.last().unwrap()
+        // Safe: we just pushed an element, so the vec is non-empty
+        &self.log[self.log.len() - 1]
     }
 
     /// Truncate log from index (inclusive) and append new entries

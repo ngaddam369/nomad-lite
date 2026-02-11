@@ -1,5 +1,8 @@
 use nomad_lite::config::NodeConfig;
-use nomad_lite::proto::{AppendEntriesRequest, VoteRequest};
+use nomad_lite::proto::{
+    command::CommandType, AppendEntriesRequest, Command as ProtoCommand, LogEntry as ProtoLogEntry,
+    SubmitJobCommand, VoteRequest,
+};
 use nomad_lite::raft::node::RaftNode;
 use nomad_lite::raft::rpc::{handle_append_entries, handle_request_vote};
 use nomad_lite::raft::state::{Command, LogEntry, RaftState};
@@ -17,7 +20,7 @@ fn test_request_vote_grant_vote() {
         last_log_term: 0,
     };
 
-    let resp = handle_request_vote(&mut state, &req, 1);
+    let resp = handle_request_vote(&mut state, &req, 1).unwrap();
 
     assert!(resp.vote_granted);
     assert_eq!(resp.term, 2);
@@ -36,7 +39,7 @@ fn test_request_vote_reject_stale_term() {
         last_log_term: 0,
     };
 
-    let resp = handle_request_vote(&mut state, &req, 1);
+    let resp = handle_request_vote(&mut state, &req, 1).unwrap();
 
     assert!(!resp.vote_granted);
     assert_eq!(resp.term, 5);
@@ -55,7 +58,7 @@ fn test_request_vote_reject_already_voted() {
         last_log_term: 0,
     };
 
-    let resp = handle_request_vote(&mut state, &req, 1);
+    let resp = handle_request_vote(&mut state, &req, 1).unwrap();
 
     assert!(!resp.vote_granted);
 }
@@ -77,7 +80,7 @@ fn test_request_vote_reject_outdated_log() {
         last_log_term: 0,
     };
 
-    let resp = handle_request_vote(&mut state, &req, 1);
+    let resp = handle_request_vote(&mut state, &req, 1).unwrap();
 
     assert!(!resp.vote_granted);
 }
@@ -96,7 +99,7 @@ fn test_append_entries_heartbeat() {
         leader_commit: 0,
     };
 
-    let resp = handle_append_entries(&mut state, &req, 1);
+    let resp = handle_append_entries(&mut state, &req, 1).unwrap();
 
     assert!(resp.success);
     assert_eq!(resp.term, 1);
@@ -117,7 +120,7 @@ fn test_append_entries_reject_stale_term() {
         leader_commit: 0,
     };
 
-    let resp = handle_append_entries(&mut state, &req, 1);
+    let resp = handle_append_entries(&mut state, &req, 1).unwrap();
 
     assert!(!resp.success);
     assert_eq!(resp.term, 5);
@@ -142,7 +145,7 @@ fn test_append_entries_update_commit_index() {
         leader_commit: 1,
     };
 
-    let resp = handle_append_entries(&mut state, &req, 1);
+    let resp = handle_append_entries(&mut state, &req, 1).unwrap();
 
     assert!(resp.success);
     assert_eq!(state.commit_index, 1);
@@ -163,7 +166,7 @@ fn test_append_entries_missing_prev_log() {
         leader_commit: 0,
     };
 
-    let resp = handle_append_entries(&mut state, &req, 1);
+    let resp = handle_append_entries(&mut state, &req, 1).unwrap();
 
     assert!(!resp.success);
 }
@@ -183,7 +186,7 @@ fn test_append_entries_higher_term_becomes_follower() {
         leader_commit: 0,
     };
 
-    let resp = handle_append_entries(&mut state, &req, 1);
+    let resp = handle_append_entries(&mut state, &req, 1).unwrap();
 
     assert!(resp.success);
     assert_eq!(state.current_term, 5);
@@ -228,7 +231,7 @@ async fn test_commit_notification_on_follower_append_entries() {
         leader_commit: 1,
     };
 
-    let resp = raft_node.handle_append_entries(req).await;
+    let resp = raft_node.handle_append_entries(req).await.unwrap();
     assert!(resp.success);
 
     // Should receive notification
@@ -257,7 +260,7 @@ async fn test_no_notification_when_commit_index_unchanged() {
         leader_commit: 0,
     };
 
-    let resp = raft_node.handle_append_entries(req).await;
+    let resp = raft_node.handle_append_entries(req).await.unwrap();
     assert!(resp.success);
 
     // Should timeout waiting for notification (none sent)
@@ -287,4 +290,118 @@ async fn test_peer_status_initially_dead() {
     let status = raft_node.get_peers_status().await;
     assert_eq!(status.get(&2), Some(&false));
     assert_eq!(status.get(&3), Some(&false));
+}
+
+#[test]
+fn test_handle_request_vote_returns_ok() {
+    let mut state = RaftState::new();
+    state.current_term = 1;
+
+    let req = VoteRequest {
+        term: 2,
+        candidate_id: 2,
+        last_log_index: 0,
+        last_log_term: 0,
+    };
+
+    let result = handle_request_vote(&mut state, &req, 1);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_handle_append_entries_returns_ok() {
+    let mut state = RaftState::new();
+    state.current_term = 1;
+
+    let req = AppendEntriesRequest {
+        term: 1,
+        leader_id: 2,
+        prev_log_index: 0,
+        prev_log_term: 0,
+        entries: vec![],
+        leader_commit: 0,
+    };
+
+    let result = handle_append_entries(&mut state, &req, 1);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_append_entries_skips_malformed_entries() {
+    let mut state = RaftState::new();
+    state.current_term = 1;
+
+    // Entry with an invalid UUID should be skipped
+    let malformed_entry = ProtoLogEntry {
+        term: 1,
+        index: 1,
+        command: Some(ProtoCommand {
+            command_type: Some(CommandType::SubmitJob(SubmitJobCommand {
+                job_id: "not-a-valid-uuid".to_string(),
+                command: "echo hello".to_string(),
+                created_at_ms: 1000,
+            })),
+        }),
+    };
+
+    let valid_entry = ProtoLogEntry {
+        term: 1,
+        index: 2,
+        command: None, // Noop - always valid
+    };
+
+    let req = AppendEntriesRequest {
+        term: 1,
+        leader_id: 2,
+        prev_log_index: 0,
+        prev_log_term: 0,
+        entries: vec![malformed_entry, valid_entry],
+        leader_commit: 0,
+    };
+
+    let resp = handle_append_entries(&mut state, &req, 1).unwrap();
+
+    // RPC should still succeed
+    assert!(resp.success);
+    // Only the valid entry should have been appended (malformed one skipped)
+    assert_eq!(state.log.len(), 1);
+    assert!(matches!(state.log[0].command, Command::Noop));
+}
+
+#[tokio::test]
+async fn test_node_handle_vote_request_returns_result() {
+    let config = NodeConfig::default();
+    let (raft_node, _rx) = RaftNode::new(config, None);
+
+    let req = VoteRequest {
+        term: 1,
+        candidate_id: 2,
+        last_log_index: 0,
+        last_log_term: 0,
+    };
+
+    let result = raft_node.handle_vote_request(req).await;
+    assert!(result.is_ok());
+    let resp = result.unwrap();
+    assert!(resp.vote_granted);
+}
+
+#[tokio::test]
+async fn test_node_handle_append_entries_returns_result() {
+    let config = NodeConfig::default();
+    let (raft_node, _rx) = RaftNode::new(config, None);
+
+    let req = AppendEntriesRequest {
+        term: 1,
+        leader_id: 2,
+        prev_log_index: 0,
+        prev_log_term: 0,
+        entries: vec![],
+        leader_commit: 0,
+    };
+
+    let result = raft_node.handle_append_entries(req).await;
+    assert!(result.is_ok());
+    let resp = result.unwrap();
+    assert!(resp.success);
 }

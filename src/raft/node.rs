@@ -487,26 +487,29 @@ impl RaftNode {
     }
 
     /// Handle incoming RequestVote RPC
-    pub async fn handle_vote_request(&self, req: VoteRequest) -> crate::proto::VoteResponse {
+    pub async fn handle_vote_request(
+        &self,
+        req: VoteRequest,
+    ) -> Result<crate::proto::VoteResponse, String> {
         let mut state = self.state.write().await;
-        let response = handle_request_vote(&mut state, &req, self.id);
+        let response = handle_request_vote(&mut state, &req, self.id)?;
 
         // Reset election timeout if we granted vote
         if response.vote_granted {
             *self.last_heartbeat.write().await = Instant::now();
         }
 
-        response
+        Ok(response)
     }
 
     /// Handle incoming AppendEntries RPC
     pub async fn handle_append_entries(
         &self,
         req: AppendEntriesRequest,
-    ) -> crate::proto::AppendEntriesResponse {
+    ) -> Result<crate::proto::AppendEntriesResponse, String> {
         let mut state = self.state.write().await;
         let old_commit_index = state.commit_index;
-        let response = handle_append_entries(&mut state, &req, self.id);
+        let response = handle_append_entries(&mut state, &req, self.id)?;
 
         // Notify if commit_index advanced
         if response.success && state.commit_index > old_commit_index {
@@ -519,7 +522,7 @@ impl RaftNode {
             *self.last_heartbeat.write().await = Instant::now();
         }
 
-        response
+        Ok(response)
     }
 
     /// Check if this node is the leader
