@@ -79,8 +79,8 @@ graph TB
     end
 
     subgraph Loops[Background Loops]
-        SCHED[Scheduler Loop<br/>100ms interval<br/>Applies commits<br/>Assigns jobs on leader]
-        WORKER[Worker Loop<br/>500ms interval<br/>Executes assigned jobs]
+        SCHED[Scheduler Loop<br/>Event-driven<br/>Applies commits<br/>Assigns jobs on leader]
+        WORKER[Worker Loop<br/>Event-driven + 2s heartbeat<br/>Executes assigned jobs]
     end
 
     QUEUE[Job Queue<br/>State Machine]
@@ -97,7 +97,7 @@ graph TB
     %% Loops subscribe/interact
     SCHED -.->|Subscribe commits| RAFT
     SCHED -->|Apply entries & Assign jobs| QUEUE
-    WORKER -->|Poll & Update| QUEUE
+    WORKER -->|Notified & Update| QUEUE
     WORKER -->|Execute| DOCKER
 
     classDef api fill:#87CEEB,stroke:#4682B4
@@ -115,7 +115,7 @@ graph TB
 
 - Every node runs all components (gRPC, Dashboard, Raft, Scheduler, Worker)
 - Only the leader's Scheduler Loop assigns jobs; followers just apply committed entries
-- Workers poll the Job Queue locally - no RPC needed for job dispatch
+- Workers are notified immediately when jobs are assigned - no polling or RPC needed for job dispatch
 - Job output is stored only on the executing node (fetched via `InternalService` RPC when queried)
 
 ## Data Flow
@@ -154,7 +154,7 @@ sequenceDiagram
     N1->>Queue1: 8. Add job to queue<br/>Status: PENDING
     N1-->>Client: 9. Response: job_id
 
-    Note over Client,Docker: Job Assignment Flow (Leader Scheduler Loop - polls every 100ms)
+    Note over Client,Docker: Job Assignment Flow (Leader Scheduler Loop - event-driven)
 
     Sched->>Raft1: 10. Subscribe to commits
     Raft1-->>Sched: 11. Commit notification
@@ -165,9 +165,9 @@ sequenceDiagram
     Sched->>Sched: 15. Select least-loaded worker<br/>(Node 2)
     Sched->>Queue1: 16. Assign job to worker 2<br/>Status: RUNNING
 
-    Note over Client,Docker: Job Execution Flow (Worker Loop - polls every 500ms)
+    Note over Client,Docker: Job Execution Flow (Worker Loop - notified on assignment)
 
-    Worker->>Queue1: 17. Poll for assigned jobs
+    Worker->>Queue1: 17. Notified, check assigned jobs
     Queue1-->>Worker: 18. Job assigned to me<br/>(RUNNING status)
 
     Worker->>Docker: 19. docker run alpine:latest<br/>--network=none --read-only<br/>--memory=256m --cpus=0.5<br/>echo hello

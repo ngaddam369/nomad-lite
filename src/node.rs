@@ -1,7 +1,7 @@
 use chrono::Utc;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{Notify, RwLock};
 
 use crate::config::{NodeConfig, SandboxConfig};
 use crate::dashboard::{run_dashboard, DashboardState};
@@ -21,6 +21,8 @@ pub struct Node {
     pub executor: JobExecutor,
     pub dashboard_addr: Option<SocketAddr>,
     pub tls_identity: Option<TlsIdentity>,
+    pub job_notify: Arc<Notify>,
+    pub worker_notify: Arc<Notify>,
 }
 
 impl Node {
@@ -42,6 +44,8 @@ impl Node {
             job_assigner: Arc::new(RwLock::new(JobAssigner::new(5000))), // 5s worker timeout
             dashboard_addr,
             tls_identity,
+            job_notify: Arc::new(Notify::new()),
+            worker_notify: Arc::new(Notify::new()),
         };
 
         (node, raft_rx)
@@ -91,8 +95,17 @@ impl Node {
         let scheduler_raft = self.raft_node.clone();
         let scheduler_queue = self.job_queue.clone();
         let scheduler_assigner = self.job_assigner.clone();
+        let scheduler_job_notify = self.job_notify.clone();
+        let scheduler_worker_notify = self.worker_notify.clone();
         tokio::spawn(async move {
-            Self::scheduler_loop(scheduler_raft, scheduler_queue, scheduler_assigner).await;
+            Self::scheduler_loop(
+                scheduler_raft,
+                scheduler_queue,
+                scheduler_assigner,
+                scheduler_job_notify,
+                scheduler_worker_notify,
+            )
+            .await;
         });
 
         // Spawn worker loop (executes assigned jobs)
@@ -101,6 +114,7 @@ impl Node {
         let worker_assigner = self.job_assigner.clone();
         let node_id = self.config.node_id;
         let sandbox_config = self.config.sandbox.clone();
+        let loop_worker_notify = self.worker_notify.clone();
         tokio::spawn(async move {
             Self::worker_loop(
                 node_id,
@@ -108,6 +122,7 @@ impl Node {
                 worker_queue,
                 worker_assigner,
                 sandbox_config,
+                loop_worker_notify,
             )
             .await;
         });
@@ -154,10 +169,10 @@ impl Node {
         raft_node: Arc<RaftNode>,
         job_queue: Arc<RwLock<JobQueue>>,
         job_assigner: Arc<RwLock<JobAssigner>>,
+        job_notify: Arc<Notify>,
+        worker_notify: Arc<Notify>,
     ) {
         let mut commit_rx = raft_node.subscribe_commits();
-        // Interval for leader job assignment (doesn't need to be as frequent)
-        let mut assign_interval = tokio::time::interval(tokio::time::Duration::from_millis(100));
 
         loop {
             tokio::select! {
@@ -170,17 +185,22 @@ impl Node {
 
                     // Apply committed entries
                     let entries = raft_node.get_committed_entries().await;
-                    for entry in entries {
-                        match entry.command {
+                    let mut should_wake_assigner = false;
+                    for entry in &entries {
+                        match &entry.command {
                             Command::SubmitJob { job_id, command, created_at } => {
                                 let mut queue = job_queue.write().await;
-                                if queue.get_job(&job_id).is_none() {
-                                    if queue.add_job(Job::with_id(job_id, command, created_at)) {
+                                if queue.get_job(job_id).is_none() {
+                                    if queue.add_job(Job::with_id(*job_id, command.clone(), *created_at)) {
                                         tracing::debug!(job_id = %job_id, created_at = %created_at, "Job added from committed entry");
                                     } else {
                                         tracing::warn!(job_id = %job_id, "Job queue at capacity, job dropped");
                                     }
                                 }
+                                // Always wake assigner — the gRPC handler may have
+                                // already added the job to the queue before this
+                                // commit notification arrived.
+                                should_wake_assigner = true;
                             }
                             Command::UpdateJobStatus {
                                 job_id,
@@ -190,7 +210,7 @@ impl Node {
                                 completed_at,
                             } => {
                                 let mut queue = job_queue.write().await;
-                                queue.update_status_metadata(&job_id, status, executed_by, exit_code, completed_at);
+                                queue.update_status_metadata(job_id, *status, *executed_by, *exit_code, *completed_at);
                                 tracing::debug!(
                                     job_id = %job_id,
                                     status = %status,
@@ -200,15 +220,19 @@ impl Node {
                                 );
                             }
                             Command::RegisterWorker { worker_id } => {
-                                job_assigner.write().await.register_worker(worker_id);
+                                job_assigner.write().await.register_worker(*worker_id);
+                                should_wake_assigner = true;
                             }
                             Command::Noop => {}
                         }
                     }
+                    if should_wake_assigner {
+                        job_notify.notify_one();
+                    }
                 }
 
-                // Leader job assignment on interval
-                _ = assign_interval.tick() => {
+                // Leader job assignment — wakes on new jobs or new workers
+                _ = job_notify.notified() => {
                     if !raft_node.is_leader().await {
                         continue;
                     }
@@ -216,7 +240,7 @@ impl Node {
                     let mut queue = job_queue.write().await;
                     let mut assigner = job_assigner.write().await;
                     while let Some((_job_id, _worker_id)) = assigner.assign_next_job(&mut queue) {
-                        // Job assigned
+                        worker_notify.notify_one();
                     }
                 }
             }
@@ -228,23 +252,22 @@ impl Node {
     /// Each node acts as both a potential leader and a worker. This loop:
     ///
     /// 1. **Registers** this node as a worker on startup
-    /// 2. **Sends heartbeats** every 500ms to stay registered
-    /// 3. **Polls for assigned jobs** that are in `Running` status
+    /// 2. **Sends heartbeats** every 2s to stay registered
+    /// 3. **Wakes immediately** when jobs are assigned via `worker_notify`
     /// 4. **Executes jobs** via shell and captures output
     /// 5. **Updates local state** with job results
     /// 6. **Replicates status** through Raft (leader only)
-    ///
-    /// # Polling Interval
-    /// Runs every 500ms. See TODO for event-driven improvements.
     async fn worker_loop(
         node_id: u64,
         raft_node: Arc<RaftNode>,
         job_queue: Arc<RwLock<JobQueue>>,
         job_assigner: Arc<RwLock<JobAssigner>>,
         sandbox_config: SandboxConfig,
+        worker_notify: Arc<Notify>,
     ) {
         let executor = JobExecutor::new(sandbox_config);
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
+        let mut heartbeat_interval =
+            tokio::time::interval(tokio::time::Duration::from_millis(2000));
 
         // Register self as worker
         {
@@ -253,7 +276,10 @@ impl Node {
         }
 
         loop {
-            interval.tick().await;
+            tokio::select! {
+                _ = worker_notify.notified() => {}
+                _ = heartbeat_interval.tick() => {}
+            }
 
             // Send heartbeat
             {
