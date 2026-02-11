@@ -1,6 +1,8 @@
-use chrono::Utc;
+use std::collections::HashMap;
+
+use chrono::{Duration, Utc};
 use nomad_lite::raft::state::Command;
-use nomad_lite::scheduler::assigner::JobAssigner;
+use nomad_lite::scheduler::assigner::{JobAssigner, WorkerState};
 use nomad_lite::scheduler::job::{Job, JobStatus};
 use nomad_lite::scheduler::queue::JobQueue;
 use uuid::Uuid;
@@ -561,4 +563,299 @@ fn test_job_new_fields_initialized() {
     let job_with_id = Job::with_id(Uuid::new_v4(), "echo test".to_string(), Utc::now());
     assert_eq!(job_with_id.executed_by, None);
     assert_eq!(job_with_id.exit_code, None);
+}
+
+// ==================== job.rs coverage tests ====================
+
+#[test]
+fn test_job_status_display() {
+    assert_eq!(format!("{}", JobStatus::Pending), "pending");
+    assert_eq!(format!("{}", JobStatus::Running), "running");
+    assert_eq!(format!("{}", JobStatus::Completed), "completed");
+    assert_eq!(format!("{}", JobStatus::Failed), "failed");
+}
+
+#[test]
+fn test_job_serde_round_trip() {
+    let original = Job::new("echo round-trip".to_string());
+    let json = serde_json::to_string(&original).expect("serialize");
+    let deserialized: Job = serde_json::from_str(&json).expect("deserialize");
+
+    assert_eq!(deserialized.id, original.id);
+    assert_eq!(deserialized.command, original.command);
+    assert_eq!(deserialized.status, original.status);
+    assert_eq!(deserialized.assigned_worker, original.assigned_worker);
+    assert_eq!(deserialized.executed_by, original.executed_by);
+    assert_eq!(deserialized.exit_code, original.exit_code);
+    assert_eq!(deserialized.output, original.output);
+    assert_eq!(deserialized.error, original.error);
+    assert_eq!(deserialized.created_at, original.created_at);
+    assert_eq!(deserialized.completed_at, original.completed_at);
+}
+
+#[test]
+fn test_job_with_id_preserves_id_and_created_at() {
+    let id = Uuid::new_v4();
+    let created_at = Utc::now() - Duration::hours(3);
+    let job = Job::with_id(id, "echo preserved".to_string(), created_at);
+
+    assert_eq!(job.id, id);
+    assert_eq!(job.created_at, created_at);
+    assert_eq!(job.command, "echo preserved");
+    assert_eq!(job.status, JobStatus::Pending);
+}
+
+// ==================== queue.rs coverage tests ====================
+
+#[test]
+fn test_job_queue_default_impl() {
+    let queue = JobQueue::default();
+    assert!(queue.is_empty());
+    assert!(!queue.is_full());
+}
+
+#[test]
+fn test_get_job_mut() {
+    let mut queue = JobQueue::new();
+
+    let job = Job::new("echo mutable".to_string());
+    let id = job.id;
+    queue.add_job(job);
+
+    // Mutate through get_job_mut
+    let job_mut = queue.get_job_mut(&id).unwrap();
+    job_mut.output = Some("mutated".to_string());
+
+    // Verify mutation persisted
+    let job = queue.get_job(&id).unwrap();
+    assert_eq!(job.output, Some("mutated".to_string()));
+
+    // Non-existent ID returns None
+    let missing = Uuid::new_v4();
+    assert!(queue.get_job_mut(&missing).is_none());
+}
+
+#[test]
+fn test_assign_job_direct() {
+    let mut queue = JobQueue::new();
+
+    let job = Job::new("echo assign".to_string());
+    let id = job.id;
+    queue.add_job(job);
+
+    assert!(queue.assign_job(&id, 42));
+
+    let job = queue.get_job(&id).unwrap();
+    assert_eq!(job.status, JobStatus::Running);
+    assert_eq!(job.assigned_worker, Some(42));
+}
+
+#[test]
+fn test_assign_job_nonexistent() {
+    let mut queue = JobQueue::new();
+    let missing = Uuid::new_v4();
+    assert!(!queue.assign_job(&missing, 1));
+}
+
+#[test]
+fn test_update_status_nonexistent_job() {
+    let mut queue = JobQueue::new();
+    let missing = Uuid::new_v4();
+    assert!(!queue.update_status(&missing, JobStatus::Completed, None, None));
+}
+
+#[test]
+fn test_update_status_none_preserves_existing_values() {
+    let mut queue = JobQueue::new();
+
+    let job = Job::new("echo preserve".to_string());
+    let id = job.id;
+    queue.add_job(job);
+
+    // Set output and error via update_status
+    queue.update_status(
+        &id,
+        JobStatus::Running,
+        Some("initial output".to_string()),
+        Some("initial error".to_string()),
+    );
+
+    // Update status again with None output/error — should NOT overwrite
+    queue.update_status(&id, JobStatus::Completed, None, None);
+
+    let job = queue.get_job(&id).unwrap();
+    assert_eq!(job.status, JobStatus::Completed);
+    assert_eq!(job.output, Some("initial output".to_string()));
+    assert_eq!(job.error, Some("initial error".to_string()));
+}
+
+#[test]
+fn test_all_jobs_sort_order() {
+    let mut queue = JobQueue::new();
+
+    let now = Utc::now();
+    let job_old = Job::with_id(
+        Uuid::new_v4(),
+        "oldest".to_string(),
+        now - Duration::hours(2),
+    );
+    let job_mid = Job::with_id(
+        Uuid::new_v4(),
+        "middle".to_string(),
+        now - Duration::hours(1),
+    );
+    let job_new = Job::with_id(Uuid::new_v4(), "newest".to_string(), now);
+
+    // Add in non-chronological order
+    queue.add_job(job_mid);
+    queue.add_job(job_new);
+    queue.add_job(job_old);
+
+    let all = queue.all_jobs();
+    assert_eq!(all.len(), 3);
+    assert_eq!(all[0].command, "oldest");
+    assert_eq!(all[1].command, "middle");
+    assert_eq!(all[2].command, "newest");
+}
+
+#[test]
+fn test_jobs_for_nonexistent_worker_returns_empty() {
+    let mut queue = JobQueue::new();
+    queue.add_job(Job::new("echo solo".to_string()));
+
+    let jobs = queue.jobs_for_worker(999);
+    assert!(jobs.is_empty());
+}
+
+#[test]
+fn test_cleanup_finished_jobs_edge_cases() {
+    // Empty queue
+    let mut queue = JobQueue::new();
+    assert_eq!(queue.cleanup_finished_jobs(), 0);
+
+    // Queue with only pending/running jobs — nothing to clean
+    let mut job1 = Job::new("echo 1".to_string());
+    let mut job2 = Job::new("echo 2".to_string());
+    job1.status = JobStatus::Pending;
+    job2.status = JobStatus::Running;
+    queue.add_job(job1);
+    queue.add_job(job2);
+
+    assert_eq!(queue.cleanup_finished_jobs(), 0);
+    assert_eq!(queue.len(), 2);
+}
+
+// ==================== assigner.rs coverage tests ====================
+
+#[test]
+fn test_worker_state_new_direct() {
+    let ws = WorkerState::new(7);
+    assert_eq!(ws.id, 7);
+    assert!(ws.running_jobs.is_empty());
+    assert!(ws.is_alive(5000));
+}
+
+#[test]
+fn test_worker_state_is_alive_direct() {
+    let ws = WorkerState::new(1);
+    // Just created — should be alive with a generous timeout
+    assert!(ws.is_alive(5000));
+
+    // With a zero timeout it should be considered dead immediately
+    // (elapsed > 0 since creation)
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    assert!(!ws.is_alive(0));
+}
+
+#[test]
+fn test_worker_heartbeat_auto_registration() {
+    let mut assigner = JobAssigner::new(5000);
+
+    // No workers yet
+    assert!(assigner.available_workers().is_empty());
+
+    // Heartbeat from unknown worker should auto-register it
+    assigner.worker_heartbeat(42);
+    assert_eq!(assigner.available_workers().len(), 1);
+    assert!(assigner.available_workers().contains(&42));
+}
+
+#[test]
+fn test_assign_next_job_least_loaded_balancing() {
+    let mut queue = JobQueue::new();
+    let mut assigner = JobAssigner::new(5000);
+
+    assigner.register_worker(1);
+    assigner.register_worker(2);
+
+    // Add 4 jobs and assign them all
+    for i in 0..4 {
+        queue.add_job(Job::new(format!("echo {i}")));
+    }
+
+    let mut assignments: HashMap<u64, usize> = HashMap::new();
+    for _ in 0..4 {
+        let (_, worker_id) = assigner.assign_next_job(&mut queue).unwrap();
+        *assignments.entry(worker_id).or_default() += 1;
+    }
+
+    // Each worker should get exactly 2 jobs (least-loaded balancing)
+    assert_eq!(*assignments.get(&1).unwrap_or(&0), 2);
+    assert_eq!(*assignments.get(&2).unwrap_or(&0), 2);
+}
+
+#[test]
+fn test_assign_next_job_no_pending_jobs() {
+    let mut queue = JobQueue::new();
+    let mut assigner = JobAssigner::new(5000);
+
+    assigner.register_worker(1);
+
+    // No jobs in queue
+    assert!(assigner.assign_next_job(&mut queue).is_none());
+}
+
+#[test]
+fn test_all_workers() {
+    let mut assigner = JobAssigner::new(5000);
+
+    assigner.register_worker(10);
+    assigner.register_worker(20);
+    assigner.register_worker(30);
+
+    let workers = assigner.all_workers();
+    assert_eq!(workers.len(), 3);
+
+    let ids: Vec<u64> = workers.iter().map(|w| w.id).collect();
+    assert!(ids.contains(&10));
+    assert!(ids.contains(&20));
+    assert!(ids.contains(&30));
+}
+
+#[test]
+fn test_check_dead_workers() {
+    let mut assigner = JobAssigner::new(100); // 100ms timeout
+
+    assigner.register_worker(1);
+    assigner.register_worker(2);
+
+    // Let timeout expire
+    std::thread::sleep(std::time::Duration::from_millis(150));
+
+    // Heartbeat only worker 1
+    assigner.worker_heartbeat(1);
+
+    let dead = assigner.check_dead_workers();
+    assert_eq!(dead.len(), 1);
+    assert!(dead.contains(&2));
+    assert!(!dead.contains(&1));
+}
+
+#[test]
+fn test_job_completed_nonexistent_worker() {
+    let mut assigner = JobAssigner::new(5000);
+    let job_id = Uuid::new_v4();
+
+    // Should not panic
+    assigner.job_completed(999, &job_id);
 }
