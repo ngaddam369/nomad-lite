@@ -43,8 +43,8 @@ jobs:
       - name: Build
         run: cargo build --verbose
 
-  test-unit:
-    name: test-unit
+  test:
+    name: test
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -60,57 +60,17 @@ jobs:
           cargo test --test internal_service_tests --verbose
           cargo test --test executor_tests --verbose
 
-  test-integration:
-    name: test-integration
-    needs: test-unit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/rust-setup
-
       - name: Run integration tests
         run: cargo test --test integration_tests --verbose -- --test-threads=1
-
-  test-failover:
-    name: test-failover
-    needs: test-integration
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/rust-setup
 
       - name: Run failover tests
         run: cargo test --test failover_tests --verbose -- --test-threads=1
 
-  test-partition:
-    name: test-partition
-    needs: test-failover
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/rust-setup
-
       - name: Run partition tests
         run: cargo test --test partition_tests --verbose -- --test-threads=1
 
-  test-chaos:
-    name: test-chaos
-    needs: test-partition
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/rust-setup
-
       - name: Run chaos/fault injection tests
         run: cargo test --test chaos_tests --verbose -- --test-threads=1
-
-  test-auth:
-    name: test-auth
-    needs: test-chaos
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/rust-setup
 
       - name: Verify openssl is available (required for cert generation)
         run: openssl version
@@ -125,11 +85,10 @@ jobs:
           rm -rf /tmp/test-certs
 
       - name: Run TLS/mTLS authentication tests
-        # Tests generate their own certs in temp directories via generate_test_certs()
         run: cargo test --test tls_tests --verbose
 
   coverage:
-    needs: test-auth
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -139,7 +98,18 @@ jobs:
         run: cargo install cargo-tarpaulin
 
       - name: Generate coverage report
-        run: cargo tarpaulin --out xml --skip-clean
+        # Only run unit tests and stable test binaries for coverage.
+        # Integration/partition/failover/chaos tests use tight Raft election
+        # timeouts that become flaky under tarpaulin's instrumentation overhead.
+        run: >
+          cargo tarpaulin --out xml --skip-clean
+          --lib
+          --test raft_rpc_tests
+          --test scheduler_tests
+          --test dashboard_tests
+          --test internal_service_tests
+          --test executor_tests
+          --test tls_tests
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
