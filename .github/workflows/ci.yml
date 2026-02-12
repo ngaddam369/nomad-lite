@@ -93,9 +93,20 @@ jobs:
       - name: Run partition tests
         run: cargo test --test partition_tests --verbose -- --test-threads=1
 
+  test-chaos:
+    name: test-chaos
+    needs: test-partition
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/rust-setup
+
+      - name: Run chaos/fault injection tests
+        run: cargo test --test chaos_tests --verbose -- --test-threads=1
+
   test-auth:
     name: test-auth
-    needs: test-partition
+    needs: test-chaos
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

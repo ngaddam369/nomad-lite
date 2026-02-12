@@ -610,3 +610,24 @@ Jobs run in isolated containers with:
 
 Use odd numbers—even numbers add overhead without improving fault tolerance.
 
+## Testing
+
+```bash
+cargo test                # Run all tests
+cargo test --lib          # Unit tests only
+cargo test --test <name>  # Specific test suite
+```
+
+| Suite | Description |
+|-------|-------------|
+| `lib` (unit) | Config, Raft state machine, RPC serialization |
+| `scheduler_tests` | Job queue, worker assignment, heartbeats |
+| `raft_rpc_tests` | AppendEntries, RequestVote, term handling |
+| `integration_tests` | Multi-node election, replication, consistency |
+| `failover_tests` | Leader crash, re-election, quorum loss |
+| `partition_tests` | Network partitions, split-brain prevention, healing |
+| `chaos_tests` | Rapid leader churn, network flapping, cascading failures, full isolation recovery |
+| `tls_tests` | mTLS certificate loading, encrypted cluster communication |
+| `executor_tests` | Docker sandbox command execution |
+| `dashboard_tests` | REST API endpoints |
+
