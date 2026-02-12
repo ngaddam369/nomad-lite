@@ -4,6 +4,8 @@ use tokio::sync::{mpsc, watch, Mutex, RwLock};
 use tokio::time::{timeout, Duration, Instant};
 use tonic::transport::{Channel, Endpoint};
 
+use tokio_util::sync::CancellationToken;
+
 use crate::config::NodeConfig;
 use crate::proto::raft_service_client::RaftServiceClient;
 use crate::proto::{AppendEntriesRequest, VoteRequest};
@@ -219,7 +221,11 @@ impl RaftNode {
     }
 
     /// Run the Raft node main loop
-    pub async fn run(&self, mut message_rx: mpsc::Receiver<RaftMessage>) {
+    pub async fn run(
+        &self,
+        mut message_rx: mpsc::Receiver<RaftMessage>,
+        shutdown_token: CancellationToken,
+    ) {
         let mut election_timeout = random_election_timeout(
             self.config.election_timeout_min_ms,
             self.config.election_timeout_max_ms,
@@ -229,6 +235,11 @@ impl RaftNode {
             let role = self.state.read().await.role;
 
             tokio::select! {
+                _ = shutdown_token.cancelled() => {
+                    tracing::info!(node_id = self.id, "Raft node shutting down");
+                    break;
+                }
+
                 // Handle incoming messages
                 Some(msg) = message_rx.recv() => {
                     match msg {

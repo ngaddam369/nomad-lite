@@ -15,9 +15,9 @@
 //! # Usage
 //!
 //! ```ignore
-//! let (raft_node, raft_rx) = RaftNode::new(config);
+//! let (raft_node, raft_rx) = RaftNode::new(config, None);
 //! raft_node.connect_to_peers().await;
-//! raft_node.run(raft_rx).await;
+//! raft_node.run(raft_rx, shutdown_token).await;
 //! ```
 
 pub mod node;

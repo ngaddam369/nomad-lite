@@ -13,6 +13,7 @@ A distributed job scheduler with custom Raft consensus, similar to Nomad or Kube
 - **Docker Sandboxing** - Jobs run in isolated containers with restricted capabilities
 - **Web Dashboard** - Real-time monitoring and job management
 - **gRPC + REST APIs** - Type-safe client communication
+- **Graceful Shutdown** - SIGTERM/SIGINT handling with drain period for in-flight work
 
 ## Requirements
 

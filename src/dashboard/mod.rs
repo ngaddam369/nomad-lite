@@ -10,6 +10,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::raft::node::RaftMessage;
@@ -57,7 +58,11 @@ struct SubmitJobResponse {
     error: Option<String>,
 }
 
-pub async fn run_dashboard(addr: SocketAddr, state: DashboardState) {
+pub async fn run_dashboard(
+    addr: SocketAddr,
+    state: DashboardState,
+    shutdown_token: CancellationToken,
+) {
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
@@ -81,7 +86,12 @@ pub async fn run_dashboard(addr: SocketAddr, state: DashboardState) {
         }
     };
 
-    if let Err(e) = axum::serve(listener, app).await {
+    if let Err(e) = axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            shutdown_token.cancelled().await;
+        })
+        .await
+    {
         tracing::error!(error = %e, "Dashboard server failed");
     }
 }

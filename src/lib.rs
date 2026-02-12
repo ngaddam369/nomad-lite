@@ -5,6 +5,7 @@ pub mod grpc;
 pub mod node;
 pub mod raft;
 pub mod scheduler;
+pub mod shutdown;
 pub mod tls;
 pub mod worker;
 

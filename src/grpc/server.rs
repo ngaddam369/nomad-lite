@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 use tonic::transport::Server;
 
 use crate::config::NodeConfig;
@@ -39,7 +40,10 @@ impl GrpcServer {
         }
     }
 
-    pub async fn run(self) -> Result<(), tonic::transport::Error> {
+    pub async fn run(
+        self,
+        shutdown_token: CancellationToken,
+    ) -> Result<(), tonic::transport::Error> {
         let cluster_service = ClusterService::new(self.raft_node.clone());
         let client_service = ClientService::new(
             self.config.clone(),
@@ -68,7 +72,7 @@ impl GrpcServer {
             .add_service(RaftServiceServer::new(cluster_service))
             .add_service(SchedulerServiceServer::new(client_service))
             .add_service(InternalServiceServer::new(internal_service))
-            .serve(self.addr)
+            .serve_with_shutdown(self.addr, shutdown_token.cancelled())
             .await
     }
 }

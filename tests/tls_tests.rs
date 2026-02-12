@@ -13,6 +13,7 @@ use tempfile::TempDir;
 
 use nomad_lite::config::TlsConfig;
 use nomad_lite::tls::TlsIdentity;
+use tokio_util::sync::CancellationToken;
 
 /// Helper to generate test certificates in a temporary directory
 fn generate_test_certs() -> TempDir {
@@ -377,7 +378,7 @@ mod integration {
 
         // Start server in background
         let server_handle = tokio::spawn(async move {
-            let _ = server.run().await;
+            let _ = server.run(CancellationToken::new()).await;
         });
 
         // Give server time to start
@@ -450,10 +451,10 @@ mod integration {
         );
 
         let handle1 = tokio::spawn(async move {
-            let _ = server1.run().await;
+            let _ = server1.run(CancellationToken::new()).await;
         });
         let handle2 = tokio::spawn(async move {
-            let _ = server2.run().await;
+            let _ = server2.run(CancellationToken::new()).await;
         });
 
         // Wait for servers to start
@@ -542,10 +543,10 @@ mod integration {
         );
 
         let handle1 = tokio::spawn(async move {
-            let _ = server1.run().await;
+            let _ = server1.run(CancellationToken::new()).await;
         });
         let handle2 = tokio::spawn(async move {
-            let _ = server2.run().await;
+            let _ = server2.run(CancellationToken::new()).await;
         });
 
         // Wait for servers to start

@@ -2,6 +2,7 @@ use chrono::Utc;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{Notify, RwLock};
+use tokio_util::sync::CancellationToken;
 
 use crate::config::{NodeConfig, SandboxConfig};
 use crate::dashboard::{run_dashboard, DashboardState};
@@ -9,6 +10,7 @@ use crate::grpc::GrpcServer;
 use crate::raft::{Command, RaftNode};
 use crate::scheduler::assigner::JobAssigner;
 use crate::scheduler::{Job, JobQueue, JobStatus};
+use crate::shutdown::install_shutdown_handler;
 use crate::tls::TlsIdentity;
 use crate::worker::JobExecutor;
 
@@ -69,26 +71,33 @@ impl Node {
         self,
         raft_rx: tokio::sync::mpsc::Receiver<crate::raft::node::RaftMessage>,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let shutdown_token = install_shutdown_handler();
+
         // Connect to peers (best-effort initial attempt)
         self.raft_node.connect_to_peers().await;
 
         // Spawn background task to retry connecting to any peers that weren't available at startup
         let retry_raft = self.raft_node.clone();
+        let retry_token = shutdown_token.clone();
         tokio::spawn(async move {
             loop {
                 if retry_raft.all_peers_connected().await {
                     tracing::info!("All peers connected");
                     break;
                 }
-                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                tokio::select! {
+                    _ = retry_token.cancelled() => break,
+                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(500)) => {}
+                }
                 retry_raft.connect_to_peers().await;
             }
         });
 
         // Spawn Raft node
         let raft_node = self.raft_node.clone();
-        tokio::spawn(async move {
-            raft_node.run(raft_rx).await;
+        let raft_token = shutdown_token.clone();
+        let raft_handle = tokio::spawn(async move {
+            raft_node.run(raft_rx, raft_token).await;
         });
 
         // Spawn scheduler loop (processes committed entries and assigns jobs)
@@ -97,13 +106,15 @@ impl Node {
         let scheduler_assigner = self.job_assigner.clone();
         let scheduler_job_notify = self.job_notify.clone();
         let scheduler_worker_notify = self.worker_notify.clone();
-        tokio::spawn(async move {
+        let scheduler_token = shutdown_token.clone();
+        let scheduler_handle = tokio::spawn(async move {
             Self::scheduler_loop(
                 scheduler_raft,
                 scheduler_queue,
                 scheduler_assigner,
                 scheduler_job_notify,
                 scheduler_worker_notify,
+                scheduler_token,
             )
             .await;
         });
@@ -115,7 +126,8 @@ impl Node {
         let node_id = self.config.node_id;
         let sandbox_config = self.config.sandbox.clone();
         let loop_worker_notify = self.worker_notify.clone();
-        tokio::spawn(async move {
+        let worker_token = shutdown_token.clone();
+        let worker_handle = tokio::spawn(async move {
             Self::worker_loop(
                 node_id,
                 worker_raft,
@@ -123,6 +135,7 @@ impl Node {
                 worker_assigner,
                 sandbox_config,
                 loop_worker_notify,
+                worker_token,
             )
             .await;
         });
@@ -133,12 +146,13 @@ impl Node {
                 raft_node: self.raft_node.clone(),
                 job_queue: self.job_queue.clone(),
             };
+            let dashboard_token = shutdown_token.clone();
             tokio::spawn(async move {
-                run_dashboard(dashboard_addr, dashboard_state).await;
+                run_dashboard(dashboard_addr, dashboard_state, dashboard_token).await;
             });
         }
 
-        // Run gRPC server (blocks)
+        // Run gRPC server (blocks until shutdown signal)
         let server = GrpcServer::new(
             self.config.listen_addr,
             self.config.clone(),
@@ -146,7 +160,27 @@ impl Node {
             self.job_queue.clone(),
             self.tls_identity.clone(),
         );
-        server.run().await?;
+        server.run(shutdown_token).await?;
+        tracing::info!("gRPC server stopped, waiting for subsystems to drain");
+
+        // Wait for worker to finish in-flight jobs (up to 30s)
+        if tokio::time::timeout(std::time::Duration::from_secs(30), worker_handle)
+            .await
+            .is_err()
+        {
+            tracing::warn!("Worker loop did not finish within 30s timeout");
+        }
+
+        // Wait for raft and scheduler to stop (up to 5s)
+        let drain = futures::future::join(raft_handle, scheduler_handle);
+        if tokio::time::timeout(std::time::Duration::from_secs(5), drain)
+            .await
+            .is_err()
+        {
+            tracing::warn!("Raft/scheduler did not finish within 5s timeout");
+        }
+
+        tracing::info!("Graceful shutdown complete");
         Ok(())
     }
 
@@ -171,11 +205,17 @@ impl Node {
         job_assigner: Arc<RwLock<JobAssigner>>,
         job_notify: Arc<Notify>,
         worker_notify: Arc<Notify>,
+        shutdown_token: CancellationToken,
     ) {
         let mut commit_rx = raft_node.subscribe_commits();
 
         loop {
             tokio::select! {
+                _ = shutdown_token.cancelled() => {
+                    tracing::info!("Scheduler loop shutting down");
+                    break;
+                }
+
                 // Wait for commit notifications
                 result = commit_rx.changed() => {
                     if result.is_err() {
@@ -264,6 +304,7 @@ impl Node {
         job_assigner: Arc<RwLock<JobAssigner>>,
         sandbox_config: SandboxConfig,
         worker_notify: Arc<Notify>,
+        shutdown_token: CancellationToken,
     ) {
         let executor = JobExecutor::new(sandbox_config);
         let mut heartbeat_interval =
@@ -277,6 +318,10 @@ impl Node {
 
         loop {
             tokio::select! {
+                _ = shutdown_token.cancelled() => {
+                    tracing::info!("Worker loop shutting down");
+                    break;
+                }
                 _ = worker_notify.notified() => {}
                 _ = heartbeat_interval.tick() => {}
             }

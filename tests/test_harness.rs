@@ -18,6 +18,7 @@ use nomad_lite::raft::node::RaftMessage;
 use nomad_lite::raft::state::{Command, RaftRole};
 use nomad_lite::raft::RaftNode;
 use nomad_lite::scheduler::{Job, JobQueue};
+use tokio_util::sync::CancellationToken;
 
 /// Test node configuration with shorter timeouts for faster tests
 pub fn test_node_config(node_id: u64, port: u16, peers: Vec<(u64, u16)>) -> NodeConfig {
@@ -148,7 +149,7 @@ impl TestCluster {
         // Spawn Raft event loop
         let raft_node_clone = raft_node.clone();
         let raft_handle = tokio::spawn(async move {
-            raft_node_clone.run(raft_rx).await;
+            raft_node_clone.run(raft_rx, CancellationToken::new()).await;
         });
 
         // Spawn scheduler loop (applies committed entries to job queue)
@@ -168,7 +169,7 @@ impl TestCluster {
         );
 
         let grpc_handle = tokio::spawn(async move {
-            if let Err(e) = grpc_server.run().await {
+            if let Err(e) = grpc_server.run(CancellationToken::new()).await {
                 tracing::error!("gRPC server error: {}", e);
             }
         });
