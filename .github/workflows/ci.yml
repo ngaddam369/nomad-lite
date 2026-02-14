@@ -9,32 +9,22 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  format:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/rust-setup
         with:
-          components: rustfmt
-          skip-protobuf: 'true'
+          components: rustfmt,clippy
 
       - name: Check formatting
         run: cargo fmt --check
 
-  clippy:
-    needs: format
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/rust-setup
-        with:
-          components: clippy
-
       - name: Run clippy
         run: cargo clippy -- -D warnings
 
-  build:
-    needs: clippy
+  test:
+    needs: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,14 +32,6 @@ jobs:
 
       - name: Build
         run: cargo build --verbose
-
-  test:
-    name: test
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/rust-setup
 
       - name: Run unit tests
         run: |
@@ -92,13 +74,6 @@ jobs:
 
       - name: Run TLS/mTLS authentication tests
         run: cargo test --test tls_tests --verbose
-
-  coverage:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/rust-setup
 
       - name: Install cargo-tarpaulin
         run: cargo install cargo-tarpaulin
