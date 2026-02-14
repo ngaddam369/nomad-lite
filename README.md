@@ -14,6 +14,7 @@ A distributed job scheduler with custom Raft consensus, similar to Nomad or Kube
 - **Web Dashboard** - Real-time monitoring and job management
 - **gRPC + REST APIs** - Type-safe client communication
 - **Graceful Shutdown** - SIGTERM/SIGINT handling with drain period for in-flight work
+- **Leader Draining & Transfer** - Voluntary leadership transfer and node draining for safe maintenance
 
 ## Requirements
 
@@ -365,7 +366,9 @@ nomad-lite
 │   ├── status <JOB_ID>          # Get job status
 │   └── list                     # List all jobs
 ├── cluster                       # Cluster management
-│   └── status                   # Get cluster info
+│   ├── status                   # Get cluster info
+│   ├── transfer-leader          # Transfer leadership to another node
+│   └── drain                    # Drain node for maintenance
 └── log                           # Raft log inspection
     └── list                     # View committed log entries
 ```
@@ -451,6 +454,33 @@ nomad-lite cluster status
 # 1        0.0.0.0:50051             [+] alive
 # 2        127.0.0.1:50052           [+] alive
 # 3        127.0.0.1:50053           [+] alive
+```
+
+**Transfer leadership:**
+
+```bash
+# Transfer to a specific node
+nomad-lite cluster -a http://127.0.0.1:50051 transfer-leader --to 2
+# Leadership transferred successfully!
+# New leader: Node 2
+
+# Auto-select best candidate
+nomad-lite cluster -a http://127.0.0.1:50051 transfer-leader
+# Leadership transferred successfully!
+# New leader: Node 3
+```
+
+**Drain a node for maintenance:**
+
+```bash
+# Drain the node: stops accepting jobs, waits for running jobs, transfers leadership
+nomad-lite cluster -a http://127.0.0.1:50051 drain
+# Draining node...
+# Node drained successfully.
+# Node drained successfully
+
+# Verify leadership moved
+nomad-lite cluster -a http://127.0.0.1:50052 status
 ```
 
 **View Raft log entries:**
@@ -556,6 +586,8 @@ curl http://localhost:8081/api/jobs
 | `StreamJobs()` | Stream jobs | No |
 | `GetClusterStatus()` | Cluster info | Forwarded to leader |
 | `GetRaftLogEntries()` | View Raft log entries | Forwarded to leader |
+| `TransferLeadership(target)` | Transfer leadership | Yes |
+| `DrainNode()` | Drain node for maintenance | No |
 
 ## Security
 
@@ -631,4 +663,6 @@ cargo test --test <name>  # Specific test suite
 | `tls_tests` | mTLS certificate loading, encrypted cluster communication |
 | `executor_tests` | Docker sandbox command execution |
 | `dashboard_tests` | REST API endpoints |
+| `leadership_transfer_tests` | Voluntary leadership transfer, auto-select, non-leader rejection |
+| `drain_tests` | Node draining, job rejection during drain, leadership handoff |
 

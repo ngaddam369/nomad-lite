@@ -6,6 +6,7 @@ use axum::{
 };
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower::ServiceExt;
@@ -77,6 +78,7 @@ fn create_test_state() -> (
     let state = DashboardState {
         raft_node: Arc::new(raft_node),
         job_queue: Arc::new(RwLock::new(JobQueue::new())),
+        draining: Arc::new(AtomicBool::new(false)),
     };
 
     (state, raft_rx)

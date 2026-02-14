@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
@@ -21,6 +22,7 @@ pub struct GrpcServer {
     raft_node: Arc<RaftNode>,
     job_queue: Arc<RwLock<JobQueue>>,
     tls_identity: Option<TlsIdentity>,
+    draining: Arc<AtomicBool>,
 }
 
 impl GrpcServer {
@@ -30,6 +32,7 @@ impl GrpcServer {
         raft_node: Arc<RaftNode>,
         job_queue: Arc<RwLock<JobQueue>>,
         tls_identity: Option<TlsIdentity>,
+        draining: Arc<AtomicBool>,
     ) -> Self {
         Self {
             addr,
@@ -37,6 +40,7 @@ impl GrpcServer {
             raft_node,
             job_queue,
             tls_identity,
+            draining,
         }
     }
 
@@ -50,6 +54,7 @@ impl GrpcServer {
             self.raft_node.clone(),
             self.job_queue.clone(),
             self.tls_identity.clone(),
+            self.draining.clone(),
         );
         let internal_service =
             InternalServiceImpl::new(self.job_queue.clone(), self.config.node_id);

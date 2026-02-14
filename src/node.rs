@@ -1,5 +1,6 @@
 use chrono::Utc;
 use std::net::SocketAddr;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::{Notify, RwLock};
 use tokio_util::sync::CancellationToken;
@@ -25,6 +26,7 @@ pub struct Node {
     pub tls_identity: Option<TlsIdentity>,
     pub job_notify: Arc<Notify>,
     pub worker_notify: Arc<Notify>,
+    pub draining: Arc<AtomicBool>,
 }
 
 impl Node {
@@ -48,6 +50,7 @@ impl Node {
             tls_identity,
             job_notify: Arc::new(Notify::new()),
             worker_notify: Arc::new(Notify::new()),
+            draining: Arc::new(AtomicBool::new(false)),
         };
 
         (node, raft_rx)
@@ -145,6 +148,7 @@ impl Node {
             let dashboard_state = DashboardState {
                 raft_node: self.raft_node.clone(),
                 job_queue: self.job_queue.clone(),
+                draining: self.draining.clone(),
             };
             let dashboard_token = shutdown_token.clone();
             tokio::spawn(async move {
@@ -159,6 +163,7 @@ impl Node {
             self.raft_node.clone(),
             self.job_queue.clone(),
             self.tls_identity.clone(),
+            self.draining.clone(),
         );
         server.run(shutdown_token).await?;
         tracing::info!("gRPC server stopped, waiting for subsystems to drain");

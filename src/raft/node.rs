@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::NodeConfig;
 use crate::proto::raft_service_client::RaftServiceClient;
-use crate::proto::{AppendEntriesRequest, VoteRequest};
+use crate::proto::{AppendEntriesRequest, TimeoutNowRequest, VoteRequest};
 use crate::raft::rpc::{handle_append_entries, handle_request_vote, log_entry_to_proto};
 use crate::raft::state::{Command, RaftRole, RaftState};
 use crate::raft::timer::random_election_timeout;
@@ -26,6 +26,11 @@ pub enum RaftMessage {
     HeartbeatReceived,
     /// Trigger election
     TriggerElection,
+    /// Transfer leadership to a target node (None = auto-select)
+    TransferLeadership {
+        target_id: Option<u64>,
+        response_tx: tokio::sync::oneshot::Sender<Result<u64, String>>,
+    },
 }
 
 /// Timeout for considering a peer as dead (3 seconds)
@@ -256,6 +261,10 @@ impl RaftNode {
                         }
                         RaftMessage::TriggerElection => {
                             self.start_election().await;
+                        }
+                        RaftMessage::TransferLeadership { target_id, response_tx } => {
+                            let result = self.handle_transfer_leadership(target_id).await;
+                            let _ = response_tx.send(result);
                         }
                     }
                 }
@@ -534,6 +543,143 @@ impl RaftNode {
         }
 
         Ok(response)
+    }
+
+    /// Handle leadership transfer request
+    async fn handle_transfer_leadership(&self, target_id: Option<u64>) -> Result<u64, String> {
+        let state = self.state.read().await;
+        if state.role != RaftRole::Leader {
+            return Err("Not the leader".to_string());
+        }
+
+        // Pick target: explicit or auto-select by highest match_index
+        let target = match target_id {
+            Some(id) => {
+                // Verify target is a known peer
+                if !self.config.peers.iter().any(|p| p.node_id == id) {
+                    return Err(format!("Unknown target node {}", id));
+                }
+                id
+            }
+            None => {
+                // Auto-select: pick the peer with the highest match_index
+                state
+                    .match_index
+                    .iter()
+                    .max_by_key(|(_, &idx)| idx)
+                    .map(|(&id, _)| id)
+                    .ok_or_else(|| "No peers available for transfer".to_string())?
+            }
+        };
+
+        let term = state.current_term;
+        let leader_last_index = state.last_log_index();
+        drop(state);
+
+        tracing::info!(
+            node_id = self.id,
+            target,
+            term,
+            "Starting leadership transfer"
+        );
+
+        // Wait for target to catch up (up to 2s)
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let state = self.state.read().await;
+            let target_match = state.match_index.get(&target).copied().unwrap_or(0);
+            if target_match >= leader_last_index {
+                break;
+            }
+            drop(state);
+
+            if Instant::now() >= deadline {
+                return Err(format!("Target node {} did not catch up within 2s", target));
+            }
+
+            // Send heartbeats to push entries, then wait
+            self.send_heartbeats().await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        // Send TimeoutNow to target
+        self.send_timeout_now(target, term).await?;
+
+        // Step down to follower
+        self.state.write().await.become_follower(term);
+        tracing::info!(
+            node_id = self.id,
+            target,
+            "Stepped down after leadership transfer"
+        );
+
+        Ok(target)
+    }
+
+    /// Send TimeoutNow RPC to a target peer
+    async fn send_timeout_now(&self, target: u64, term: u64) -> Result<(), String> {
+        let peers = self.peers.lock().await;
+        let client = peers
+            .get(&target)
+            .ok_or_else(|| format!("Not connected to target node {}", target))?;
+
+        let mut client = client.clone();
+        drop(peers);
+
+        let req = TimeoutNowRequest {
+            term,
+            leader_id: self.id,
+        };
+
+        match timeout(Duration::from_millis(500), client.timeout_now(req)).await {
+            Ok(Ok(response)) => {
+                let resp = response.into_inner();
+                if resp.success {
+                    tracing::info!(target, "TimeoutNow accepted by target");
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "TimeoutNow rejected by node {} (term {})",
+                        target, resp.term
+                    ))
+                }
+            }
+            Ok(Err(e)) => Err(format!("TimeoutNow RPC failed: {}", e)),
+            Err(_) => Err(format!("TimeoutNow RPC to node {} timed out", target)),
+        }
+    }
+
+    /// Handle incoming TimeoutNow RPC — immediately start an election
+    pub async fn handle_timeout_now(
+        &self,
+        req: TimeoutNowRequest,
+    ) -> Result<crate::proto::TimeoutNowResponse, String> {
+        let state = self.state.read().await;
+        let current_term = state.current_term;
+
+        if req.term < current_term {
+            return Ok(crate::proto::TimeoutNowResponse {
+                term: current_term,
+                success: false,
+            });
+        }
+        drop(state);
+
+        tracing::info!(
+            node_id = self.id,
+            from_leader = req.leader_id,
+            term = req.term,
+            "Received TimeoutNow, starting immediate election"
+        );
+
+        // Immediately start election
+        self.start_election().await;
+
+        let new_term = self.state.read().await.current_term;
+        Ok(crate::proto::TimeoutNowResponse {
+            term: new_term,
+            success: true,
+        })
     }
 
     /// Check if this node is the leader

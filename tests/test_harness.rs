@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -160,12 +161,14 @@ impl TestCluster {
         });
 
         // Spawn gRPC server
+        let draining = Arc::new(AtomicBool::new(false));
         let grpc_server = GrpcServer::new(
             listen_addr,
             config,
             raft_node.clone(),
             job_queue.clone(),
             None,
+            draining.clone(),
         );
 
         let grpc_handle = tokio::spawn(async move {
@@ -383,6 +386,26 @@ impl TestCluster {
             }
         }
         None
+    }
+
+    /// Transfer leadership from the current leader to a target node (or auto-select if None)
+    pub async fn transfer_leadership(&self, target: Option<u64>) -> Result<u64, String> {
+        let leader_id = self.get_leader_id().await.ok_or("No leader elected")?;
+        let leader = self.get_node(leader_id).ok_or("Leader node not found")?;
+
+        let (tx, rx) = oneshot::channel();
+        leader
+            .raft_node
+            .message_sender()
+            .send(RaftMessage::TransferLeadership {
+                target_id: target,
+                response_tx: tx,
+            })
+            .await
+            .map_err(|e| format!("Failed to send transfer request: {}", e))?;
+
+        rx.await
+            .map_err(|e| format!("Failed to receive transfer response: {}", e))?
     }
 
     /// Wait for commit on remaining nodes (excluding shutdown nodes)

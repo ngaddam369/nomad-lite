@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
@@ -12,10 +13,11 @@ use crate::proto::internal_service_client::InternalServiceClient;
 use crate::proto::scheduler_service_client::SchedulerServiceClient;
 use crate::proto::scheduler_service_server::SchedulerService;
 use crate::proto::{
-    GetClusterStatusRequest, GetClusterStatusResponse, GetJobOutputRequest, GetJobStatusRequest,
-    GetJobStatusResponse, GetRaftLogEntriesRequest, GetRaftLogEntriesResponse, JobInfo,
-    JobStatus as ProtoJobStatus, ListJobsRequest, ListJobsResponse, NodeInfo, RaftLogEntryInfo,
-    StreamJobsRequest, SubmitJobRequest, SubmitJobResponse,
+    DrainNodeRequest, DrainNodeResponse, GetClusterStatusRequest, GetClusterStatusResponse,
+    GetJobOutputRequest, GetJobStatusRequest, GetJobStatusResponse, GetRaftLogEntriesRequest,
+    GetRaftLogEntriesResponse, JobInfo, JobStatus as ProtoJobStatus, ListJobsRequest,
+    ListJobsResponse, NodeInfo, RaftLogEntryInfo, StreamJobsRequest, SubmitJobRequest,
+    SubmitJobResponse, TransferLeadershipRequest, TransferLeadershipResponse,
 };
 use crate::raft::rpc::log_entry_to_proto;
 use crate::raft::{Command, RaftNode};
@@ -33,6 +35,8 @@ pub struct ClientService {
     internal_pool: Arc<Mutex<HashMap<u64, InternalServiceClient<Channel>>>>,
     /// TLS identity for secure connections to other nodes
     tls_identity: Option<TlsIdentity>,
+    /// Whether this node is draining (rejecting new jobs, preparing for shutdown)
+    draining: Arc<AtomicBool>,
 }
 
 impl ClientService {
@@ -41,6 +45,7 @@ impl ClientService {
         raft_node: Arc<RaftNode>,
         job_queue: Arc<RwLock<JobQueue>>,
         tls_identity: Option<TlsIdentity>,
+        draining: Arc<AtomicBool>,
     ) -> Self {
         Self {
             config,
@@ -49,6 +54,7 @@ impl ClientService {
             client_pool: Arc::new(Mutex::new(HashMap::new())),
             internal_pool: Arc::new(Mutex::new(HashMap::new())),
             tls_identity,
+            draining,
         }
     }
 
@@ -166,6 +172,13 @@ impl SchedulerService for ClientService {
         request: Request<SubmitJobRequest>,
     ) -> Result<Response<SubmitJobResponse>, Status> {
         let req = request.into_inner();
+
+        // Check if node is draining
+        if self.draining.load(Ordering::Relaxed) {
+            return Err(Status::unavailable(
+                "Node is draining and not accepting new jobs",
+            ));
+        }
 
         // Validate command is not empty
         if req.command.trim().is_empty() {
@@ -483,6 +496,101 @@ impl SchedulerService for ClientService {
             entries,
             commit_index,
             last_log_index,
+        }))
+    }
+
+    async fn transfer_leadership(
+        &self,
+        request: Request<TransferLeadershipRequest>,
+    ) -> Result<Response<TransferLeadershipResponse>, Status> {
+        let req = request.into_inner();
+        let target_id = if req.target_node_id == 0 {
+            None
+        } else {
+            Some(req.target_node_id)
+        };
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.raft_node
+            .message_sender()
+            .send(crate::raft::node::RaftMessage::TransferLeadership {
+                target_id,
+                response_tx: tx,
+            })
+            .await
+            .map_err(|_| Status::internal("Failed to send transfer request to Raft"))?;
+
+        match rx.await {
+            Ok(Ok(new_leader_id)) => Ok(Response::new(TransferLeadershipResponse {
+                success: true,
+                message: format!("Leadership transferred to node {}", new_leader_id),
+                new_leader_id,
+            })),
+            Ok(Err(e)) => Ok(Response::new(TransferLeadershipResponse {
+                success: false,
+                message: e,
+                new_leader_id: 0,
+            })),
+            Err(_) => Err(Status::internal("Failed to receive transfer response")),
+        }
+    }
+
+    async fn drain_node(
+        &self,
+        _request: Request<DrainNodeRequest>,
+    ) -> Result<Response<DrainNodeResponse>, Status> {
+        // Set draining flag
+        self.draining.store(true, Ordering::Relaxed);
+        tracing::info!(node_id = self.config.node_id, "Node draining started");
+
+        // Wait for running jobs on this worker to finish (up to 60s)
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(60);
+        loop {
+            let running = self
+                .job_queue
+                .read()
+                .await
+                .running_jobs_on_worker(self.config.node_id);
+            if running == 0 {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                tracing::warn!(running, "Drain timed out waiting for jobs to complete");
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        }
+
+        // If we're the leader, transfer leadership
+        if self.raft_node.is_leader().await {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            if self
+                .raft_node
+                .message_sender()
+                .send(crate::raft::node::RaftMessage::TransferLeadership {
+                    target_id: None,
+                    response_tx: tx,
+                })
+                .await
+                .is_ok()
+            {
+                match rx.await {
+                    Ok(Ok(new_leader)) => {
+                        tracing::info!(new_leader, "Leadership transferred during drain");
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!(error = %e, "Leadership transfer failed during drain");
+                    }
+                    Err(_) => {
+                        tracing::warn!("Leadership transfer channel closed during drain");
+                    }
+                }
+            }
+        }
+
+        Ok(Response::new(DrainNodeResponse {
+            success: true,
+            message: "Node drained successfully".to_string(),
         }))
     }
 }

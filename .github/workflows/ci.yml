@@ -72,6 +72,12 @@ jobs:
       - name: Run chaos/fault injection tests
         run: cargo test --test chaos_tests --verbose -- --test-threads=1
 
+      - name: Run leadership transfer tests
+        run: cargo test --test leadership_transfer_tests --verbose -- --test-threads=1
+
+      - name: Run drain tests
+        run: cargo test --test drain_tests --verbose -- --test-threads=1
+
       - name: Verify openssl is available (required for cert generation)
         run: openssl version
 

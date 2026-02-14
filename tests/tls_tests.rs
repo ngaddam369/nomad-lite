@@ -314,6 +314,7 @@ mod integration {
     use nomad_lite::grpc::GrpcServer;
     use nomad_lite::raft::RaftNode;
     use nomad_lite::scheduler::JobQueue;
+    use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
@@ -374,6 +375,7 @@ mod integration {
             raft_node,
             job_queue,
             Some(tls_identity),
+            Arc::new(AtomicBool::new(false)),
         );
 
         // Start server in background
@@ -441,6 +443,7 @@ mod integration {
             raft_node1.clone(),
             job_queue1,
             Some(tls_identity1),
+            Arc::new(AtomicBool::new(false)),
         );
         let server2 = GrpcServer::new(
             config2.listen_addr,
@@ -448,6 +451,7 @@ mod integration {
             raft_node2.clone(),
             job_queue2,
             Some(tls_identity2),
+            Arc::new(AtomicBool::new(false)),
         );
 
         let handle1 = tokio::spawn(async move {
@@ -533,6 +537,7 @@ mod integration {
             raft_node1.clone(),
             job_queue1,
             Some(tls_identity1),
+            Arc::new(AtomicBool::new(false)),
         );
         let server2 = GrpcServer::new(
             config2.listen_addr,
@@ -540,6 +545,7 @@ mod integration {
             raft_node2.clone(),
             job_queue2,
             None,
+            Arc::new(AtomicBool::new(false)),
         );
 
         let handle1 = tokio::spawn(async move {

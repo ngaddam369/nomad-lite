@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use axum::{
@@ -21,6 +22,7 @@ use crate::scheduler::{Job, JobQueue};
 pub struct DashboardState {
     pub raft_node: Arc<RaftNode>,
     pub job_queue: Arc<RwLock<JobQueue>>,
+    pub draining: Arc<AtomicBool>,
 }
 
 #[derive(Serialize)]
@@ -142,6 +144,17 @@ async fn submit_job_handler(
     State(state): State<DashboardState>,
     Json(payload): Json<SubmitJobRequest>,
 ) -> impl IntoResponse {
+    if state.draining.load(Ordering::Relaxed) {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(SubmitJobResponse {
+                success: false,
+                job_id: None,
+                error: Some("Node is draining and not accepting new jobs".to_string()),
+            }),
+        );
+    }
+
     if !state.raft_node.is_leader().await {
         return (
             StatusCode::BAD_REQUEST,

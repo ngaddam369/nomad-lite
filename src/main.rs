@@ -10,8 +10,8 @@ use nomad_lite::config::{NodeConfig, PeerConfig, SandboxConfig, TlsConfig};
 use nomad_lite::node::Node;
 use nomad_lite::proto::scheduler_service_client::SchedulerServiceClient;
 use nomad_lite::proto::{
-    GetClusterStatusRequest, GetJobStatusRequest, GetRaftLogEntriesRequest, JobStatus,
-    ListJobsRequest, StreamJobsRequest, SubmitJobRequest,
+    DrainNodeRequest, GetClusterStatusRequest, GetJobStatusRequest, GetRaftLogEntriesRequest,
+    JobStatus, ListJobsRequest, StreamJobsRequest, SubmitJobRequest, TransferLeadershipRequest,
 };
 use nomad_lite::tls::TlsIdentity;
 
@@ -181,6 +181,14 @@ enum JobCommands {
 enum ClusterCommands {
     /// Get cluster status and node information
     Status,
+    /// Transfer leadership to another node
+    TransferLeader {
+        /// Target node ID (omit for auto-select)
+        #[arg(long)]
+        to: Option<u64>,
+    },
+    /// Drain this node: stop accepting jobs, finish running jobs, transfer leadership
+    Drain,
 }
 
 // =============================================================================
@@ -252,6 +260,19 @@ struct ClusterStatusOutput {
     current_term: u64,
     leader_id: u64,
     nodes: Vec<NodeInfoOutput>,
+}
+
+#[derive(Serialize)]
+struct TransferLeaderOutput {
+    success: bool,
+    message: String,
+    new_leader_id: u64,
+}
+
+#[derive(Serialize)]
+struct DrainOutput {
+    success: bool,
+    message: String,
 }
 
 #[derive(Serialize)]
@@ -874,6 +895,68 @@ async fn handle_log_list(
     Ok(())
 }
 
+async fn handle_transfer_leader(
+    client: &mut SchedulerServiceClient<Channel>,
+    target: Option<u64>,
+    output_format: &OutputFormat,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let response = client
+        .transfer_leadership(TransferLeadershipRequest {
+            target_node_id: target.unwrap_or(0),
+        })
+        .await?
+        .into_inner();
+
+    match output_format {
+        OutputFormat::Json => {
+            let output = TransferLeaderOutput {
+                success: response.success,
+                message: response.message.clone(),
+                new_leader_id: response.new_leader_id,
+            };
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+        OutputFormat::Table => {
+            if response.success {
+                println!("Leadership transferred successfully!");
+                println!("New leader: Node {}", response.new_leader_id);
+            } else {
+                eprintln!("Transfer failed: {}", response.message);
+                std::process::exit(1);
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn handle_drain(
+    client: &mut SchedulerServiceClient<Channel>,
+    output_format: &OutputFormat,
+) -> Result<(), Box<dyn std::error::Error>> {
+    eprintln!("Draining node...");
+    let response = client.drain_node(DrainNodeRequest {}).await?.into_inner();
+
+    match output_format {
+        OutputFormat::Json => {
+            let output = DrainOutput {
+                success: response.success,
+                message: response.message.clone(),
+            };
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+        OutputFormat::Table => {
+            if response.success {
+                println!("Node drained successfully.");
+                println!("{}", response.message);
+            } else {
+                eprintln!("Drain failed: {}", response.message);
+                std::process::exit(1);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn format_command(command: &Option<nomad_lite::proto::Command>) -> (String, String) {
     use nomad_lite::proto::command::CommandType;
 
@@ -943,6 +1026,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match command {
                 ClusterCommands::Status => {
                     handle_cluster_status(&mut grpc_client, &client.output).await?;
+                }
+                ClusterCommands::TransferLeader { to } => {
+                    handle_transfer_leader(&mut grpc_client, to, &client.output).await?;
+                }
+                ClusterCommands::Drain => {
+                    handle_drain(&mut grpc_client, &client.output).await?;
                 }
             }
         }

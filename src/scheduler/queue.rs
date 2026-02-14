@@ -148,6 +148,14 @@ impl JobQueue {
         jobs
     }
 
+    /// Count jobs currently running on a specific worker
+    pub fn running_jobs_on_worker(&self, worker_id: u64) -> usize {
+        self.jobs
+            .values()
+            .filter(|j| j.status == JobStatus::Running && j.assigned_worker == Some(worker_id))
+            .count()
+    }
+
     /// Get jobs assigned to a specific worker
     pub fn jobs_for_worker(&self, worker_id: u64) -> Vec<&Job> {
         self.jobs
