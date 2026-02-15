@@ -4,7 +4,7 @@ use crate::proto::{
     AppendEntriesRequest, AppendEntriesResponse, LogEntry as ProtoLogEntry, VoteRequest,
     VoteResponse,
 };
-use crate::raft::state::{Command, LogEntry, RaftState};
+use crate::raft::state::{Command, JobStatusUpdate, LogEntry, RaftState};
 use crate::scheduler::JobStatus;
 use uuid::Uuid;
 
@@ -164,6 +164,23 @@ fn proto_to_log_entry(proto: &ProtoLogEntry) -> Option<LogEntry> {
                     worker_id: register.worker_id,
                 }
             }
+            Some(crate::proto::command::CommandType::BatchUpdateJobStatus(batch)) => {
+                let updates = batch
+                    .updates
+                    .iter()
+                    .map(|u| {
+                        Ok(JobStatusUpdate {
+                            job_id: Uuid::parse_str(&u.job_id).map_err(|_| ())?,
+                            status: proto_status_to_internal(u.status()),
+                            executed_by: u.executed_by,
+                            exit_code: u.exit_code,
+                            completed_at: u.completed_at_ms.map(ms_to_datetime),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ()>>()
+                    .ok()?;
+                Command::BatchUpdateJobStatus { updates }
+            }
             None => Command::Noop,
         },
         None => Command::Noop,
@@ -210,6 +227,25 @@ pub fn log_entry_to_proto(entry: &LogEntry) -> ProtoLogEntry {
                 completed_at_ms: completed_at.map(|dt| dt.timestamp_millis()),
             })),
         }),
+        Command::BatchUpdateJobStatus { updates } => {
+            let proto_updates = updates
+                .iter()
+                .map(|u| crate::proto::JobStatusUpdate {
+                    job_id: u.job_id.to_string(),
+                    status: internal_status_to_proto(&u.status) as i32,
+                    executed_by: u.executed_by,
+                    exit_code: u.exit_code,
+                    completed_at_ms: u.completed_at.map(|dt| dt.timestamp_millis()),
+                })
+                .collect();
+            Some(ProtoCommand {
+                command_type: Some(CommandType::BatchUpdateJobStatus(
+                    crate::proto::BatchUpdateJobStatusCommand {
+                        updates: proto_updates,
+                    },
+                )),
+            })
+        }
         Command::RegisterWorker { worker_id } => Some(ProtoCommand {
             command_type: Some(CommandType::RegisterWorker(RegisterWorkerCommand {
                 worker_id: *worker_id,
@@ -566,6 +602,74 @@ mod tests {
             assert_eq!(orig_exit, rec_exit);
         } else {
             panic!("Commands don't match");
+        }
+    }
+
+    /// Test roundtrip conversion for BatchUpdateJobStatus.
+    #[test]
+    fn test_roundtrip_batch_update_job_status() {
+        let id1 = Uuid::new_v4();
+        let id2 = Uuid::new_v4();
+        let now = Utc::now();
+        let original = LogEntry {
+            term: 5,
+            index: 42,
+            command: Command::BatchUpdateJobStatus {
+                updates: vec![
+                    JobStatusUpdate {
+                        job_id: id1,
+                        status: JobStatus::Completed,
+                        executed_by: 1,
+                        exit_code: Some(0),
+                        completed_at: Some(now),
+                    },
+                    JobStatusUpdate {
+                        job_id: id2,
+                        status: JobStatus::Failed,
+                        executed_by: 2,
+                        exit_code: Some(1),
+                        completed_at: Some(now),
+                    },
+                ],
+            },
+        };
+
+        let proto = log_entry_to_proto(&original);
+        let recovered = proto_to_log_entry(&proto).unwrap();
+
+        assert_eq!(recovered.term, 5);
+        assert_eq!(recovered.index, 42);
+        if let Command::BatchUpdateJobStatus { updates } = &recovered.command {
+            assert_eq!(updates.len(), 2);
+            assert_eq!(updates[0].job_id, id1);
+            assert_eq!(updates[0].status, JobStatus::Completed);
+            assert_eq!(updates[0].executed_by, 1);
+            assert_eq!(updates[0].exit_code, Some(0));
+            assert_eq!(updates[1].job_id, id2);
+            assert_eq!(updates[1].status, JobStatus::Failed);
+            assert_eq!(updates[1].executed_by, 2);
+            assert_eq!(updates[1].exit_code, Some(1));
+        } else {
+            panic!("Expected BatchUpdateJobStatus command");
+        }
+    }
+
+    /// Test roundtrip conversion for empty BatchUpdateJobStatus.
+    #[test]
+    fn test_roundtrip_batch_update_empty() {
+        let original = LogEntry {
+            term: 1,
+            index: 1,
+            command: Command::BatchUpdateJobStatus { updates: vec![] },
+        };
+
+        let proto = log_entry_to_proto(&original);
+        let recovered = proto_to_log_entry(&proto).unwrap();
+
+        if let Command::BatchUpdateJobStatus { updates } = &recovered.command {
+            assert!(updates.is_empty());
+        } else {
+            panic!("Expected BatchUpdateJobStatus command");
         }
     }
 

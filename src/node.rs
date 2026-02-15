@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 use crate::config::{NodeConfig, SandboxConfig};
 use crate::dashboard::{run_dashboard, DashboardState};
 use crate::grpc::GrpcServer;
+use crate::raft::state::JobStatusUpdate;
 use crate::raft::{Command, RaftNode};
 use crate::scheduler::assigner::JobAssigner;
 use crate::scheduler::{Job, JobQueue, JobStatus};
@@ -264,6 +265,19 @@ impl Node {
                                     "Job status updated"
                                 );
                             }
+                            Command::BatchUpdateJobStatus { updates } => {
+                                let mut queue = job_queue.write().await;
+                                for u in updates {
+                                    queue.update_status_metadata(&u.job_id, u.status, u.executed_by, u.exit_code, u.completed_at);
+                                    tracing::debug!(
+                                        job_id = %u.job_id,
+                                        status = %u.status,
+                                        executed_by = u.executed_by,
+                                        completed_at = u.completed_at.map(|dt| dt.to_rfc3339()).as_deref().unwrap_or("n/a"),
+                                        "Job status updated (batch)"
+                                    );
+                                }
+                            }
                             Command::RegisterWorker { worker_id } => {
                                 job_assigner.write().await.register_worker(*worker_id);
                                 should_wake_assigner = true;
@@ -362,7 +376,9 @@ impl Node {
                     .unwrap_or_default()
             };
 
-            // Execute jobs
+            // Execute jobs and collect status updates for batching
+            let mut pending_updates: Vec<JobStatusUpdate> = Vec::new();
+
             for (job_id, command) in jobs_to_run {
                 let result = executor.execute(job_id, &command).await;
 
@@ -387,30 +403,45 @@ impl Node {
                     assigner.job_completed(node_id, &job_id);
                 }
 
-                // If leader, replicate the metadata (not output) through Raft
-                if raft_node.is_leader().await {
-                    let command = Command::UpdateJobStatus {
-                        job_id,
-                        status: result.status,
-                        executed_by: node_id,
-                        exit_code: result.exit_code,
-                        completed_at: Some(completed_at),
-                    };
-                    let (tx, _rx) = tokio::sync::oneshot::channel();
-                    if let Err(e) = raft_node
-                        .message_sender()
-                        .send(crate::raft::node::RaftMessage::AppendCommand {
-                            command,
-                            response_tx: tx,
-                        })
-                        .await
-                    {
-                        tracing::warn!(
-                            job_id = %job_id,
-                            error = %e,
-                            "Failed to send job status update to Raft"
-                        );
+                // Buffer the status update for Raft replication
+                pending_updates.push(JobStatusUpdate {
+                    job_id,
+                    status: result.status,
+                    executed_by: node_id,
+                    exit_code: result.exit_code,
+                    completed_at: Some(completed_at),
+                });
+            }
+
+            // Flush buffered updates as a single Raft command
+            if !pending_updates.is_empty() && raft_node.is_leader().await {
+                let command = if pending_updates.len() == 1 {
+                    let u = pending_updates.remove(0);
+                    Command::UpdateJobStatus {
+                        job_id: u.job_id,
+                        status: u.status,
+                        executed_by: u.executed_by,
+                        exit_code: u.exit_code,
+                        completed_at: u.completed_at,
                     }
+                } else {
+                    Command::BatchUpdateJobStatus {
+                        updates: pending_updates,
+                    }
+                };
+                let (tx, _rx) = tokio::sync::oneshot::channel();
+                if let Err(e) = raft_node
+                    .message_sender()
+                    .send(crate::raft::node::RaftMessage::AppendCommand {
+                        command,
+                        response_tx: tx,
+                    })
+                    .await
+                {
+                    tracing::warn!(
+                        error = %e,
+                        "Failed to send job status update(s) to Raft"
+                    );
                 }
             }
         }

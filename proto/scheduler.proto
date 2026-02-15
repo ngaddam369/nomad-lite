@@ -64,6 +64,7 @@ message Command {
         SubmitJobCommand submit_job = 1;
         UpdateJobStatusCommand update_job_status = 2;
         RegisterWorkerCommand register_worker = 3;
+        BatchUpdateJobStatusCommand batch_update_job_status = 4;
     }
 }
 
@@ -83,6 +84,18 @@ message UpdateJobStatusCommand {
 
 message RegisterWorkerCommand {
     uint64 worker_id = 1;
+}
+
+message JobStatusUpdate {
+    string job_id = 1;
+    JobStatus status = 2;
+    uint64 executed_by = 3;
+    optional int32 exit_code = 4;
+    optional int64 completed_at_ms = 5;
+}
+
+message BatchUpdateJobStatusCommand {
+    repeated JobStatusUpdate updates = 1;
 }
 
 // ==================== Client API ====================

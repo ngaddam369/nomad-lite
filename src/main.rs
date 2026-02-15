@@ -980,6 +980,10 @@ fn format_command(command: &Option<nomad_lite::proto::Command>) -> (String, Stri
                 "RegisterWorker".to_string(),
                 format!("worker_id={}", register.worker_id),
             ),
+            Some(CommandType::BatchUpdateJobStatus(batch)) => (
+                "BatchUpdateJobStatus".to_string(),
+                format!("{} updates", batch.updates.len()),
+            ),
             None => ("Noop".to_string(), String::new()),
         },
         None => ("Noop".to_string(), String::new()),

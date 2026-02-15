@@ -227,6 +227,18 @@ impl TestCluster {
                             completed_at,
                         );
                     }
+                    Command::BatchUpdateJobStatus { updates } => {
+                        let mut queue = job_queue.write().await;
+                        for u in updates {
+                            queue.update_status_metadata(
+                                &u.job_id,
+                                u.status,
+                                u.executed_by,
+                                u.exit_code,
+                                u.completed_at,
+                            );
+                        }
+                    }
                     Command::RegisterWorker { .. } | Command::Noop => {}
                 }
             }

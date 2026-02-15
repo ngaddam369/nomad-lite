@@ -23,6 +23,16 @@ impl std::fmt::Display for RaftRole {
     }
 }
 
+/// A single job status update, used in both single and batch commands.
+#[derive(Debug, Clone)]
+pub struct JobStatusUpdate {
+    pub job_id: Uuid,
+    pub status: JobStatus,
+    pub executed_by: u64,
+    pub exit_code: Option<i32>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
 /// Commands that can be replicated through Raft
 #[derive(Debug, Clone)]
 pub enum Command {
@@ -40,6 +50,8 @@ pub enum Command {
         exit_code: Option<i32>,
         completed_at: Option<DateTime<Utc>>,
     },
+    /// Batch update multiple job statuses in a single Raft log entry
+    BatchUpdateJobStatus { updates: Vec<JobStatusUpdate> },
     /// Register a worker
     RegisterWorker { worker_id: u64 },
     /// No-op command (used for leader commit)
