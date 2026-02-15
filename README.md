@@ -15,6 +15,7 @@ A distributed job scheduler with custom Raft consensus, similar to Nomad or Kube
 - **gRPC + REST APIs** - Type-safe client communication
 - **Graceful Shutdown** - SIGTERM/SIGINT handling with drain period for in-flight work
 - **Leader Draining & Transfer** - Voluntary leadership transfer and node draining for safe maintenance
+- **Batch Replication** - Multiple job status updates batched into a single Raft log entry for reduced consensus overhead
 
 ## Requirements
 
@@ -489,15 +490,18 @@ nomad-lite cluster -a http://127.0.0.1:50052 status
 nomad-lite log list
 # Raft Log Entries
 # ================================================================================
-# Commit Index: 3  |  Last Log Index: 3
+# Commit Index: 6  |  Last Log Index: 6
 #
 # INDEX  TERM   COMMITTED  TYPE                 DETAILS
 # --------------------------------------------------------------------------------
 # 1      1      yes        Noop
-# 2      1      yes        SubmitJob            job_id=ef319e40-..., cmd=echo hello
-# 3      1      yes        UpdateJobStatus      job_id=ef319e40-..., status=Completed
+# 2      1      yes        SubmitJob            job_id=bd764021-..., cmd=echo job1
+# 3      1      yes        SubmitJob            job_id=1cce681f-..., cmd=echo job2
+# 4      1      yes        SubmitJob            job_id=26694755-..., cmd=echo job3
+# 5      1      yes        BatchUpdateJobStatus 3 updates
+# 6      1      yes        UpdateJobStatus      job_id=17cc39b2-..., status=Completed
 #
-# Showing 3 entries
+# Showing 6 entries
 ```
 
 **View log entries with pagination:**
@@ -578,6 +582,8 @@ curl http://localhost:8081/api/jobs
 
 ### gRPC API
 
+**SchedulerService** (client-facing):
+
 | Method | Description | Leader Only |
 |--------|-------------|-------------|
 | `SubmitJob(command)` | Submit a job | Yes |
@@ -588,6 +594,12 @@ curl http://localhost:8081/api/jobs
 | `GetRaftLogEntries()` | View Raft log entries | Forwarded to leader |
 | `TransferLeadership(target)` | Transfer leadership | Yes |
 | `DrainNode()` | Drain node for maintenance | No |
+
+**InternalService** (node-to-node, not client-facing):
+
+| Method | Description |
+|--------|-------------|
+| `GetJobOutput(job_id)` | Fetch job output from the node that executed it |
 
 ## Security
 
@@ -662,6 +674,7 @@ cargo test --test <name>  # Specific test suite
 | `chaos_tests` | Rapid leader churn, network flapping, cascading failures, full isolation recovery |
 | `tls_tests` | mTLS certificate loading, encrypted cluster communication |
 | `executor_tests` | Docker sandbox command execution |
+| `internal_service_tests` | Internal node-to-node API, job output fetching |
 | `dashboard_tests` | REST API endpoints |
 | `leadership_transfer_tests` | Voluntary leadership transfer, auto-select, non-leader rejection |
 | `drain_tests` | Node draining, job rejection during drain, leadership handoff |
