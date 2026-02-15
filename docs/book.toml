@@ -1,0 +1,11 @@
+[book]
+title = "nomad-lite"
+authors = ["ngaddam369"]
+language = "en"
+src = "src"
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
+[output.html]
+additional-css = []
