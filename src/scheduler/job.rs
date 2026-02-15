@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::raft::state::SnapshotJob;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JobStatus {
     Pending,
@@ -63,6 +65,31 @@ impl Job {
             error: None,
             created_at,
             completed_at: None,
+        }
+    }
+
+    /// Reconstruct a Job from a snapshot entry. Output/error are not preserved
+    /// in snapshots (they are stored locally on the executing node).
+    pub fn from_snapshot(snap: &SnapshotJob) -> Self {
+        Self {
+            id: snap.id,
+            command: snap.command.clone(),
+            status: snap.status,
+            assigned_worker: if snap.assigned_worker == 0 {
+                None
+            } else {
+                Some(snap.assigned_worker)
+            },
+            executed_by: if snap.executed_by == 0 {
+                None
+            } else {
+                Some(snap.executed_by)
+            },
+            exit_code: snap.exit_code,
+            output: None,
+            error: None,
+            created_at: snap.created_at,
+            completed_at: snap.completed_at,
         }
     }
 }

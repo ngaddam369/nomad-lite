@@ -5,6 +5,28 @@ use uuid::Uuid;
 
 use crate::scheduler::JobStatus;
 
+/// A job captured in a snapshot (serialized state of the job queue).
+#[derive(Debug, Clone)]
+pub struct SnapshotJob {
+    pub id: Uuid,
+    pub command: String,
+    pub status: JobStatus,
+    pub assigned_worker: u64,
+    pub executed_by: u64,
+    pub exit_code: Option<i32>,
+    pub created_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+/// A snapshot of the state machines at a given log index.
+#[derive(Debug, Clone)]
+pub struct Snapshot {
+    pub last_included_index: u64,
+    pub last_included_term: u64,
+    pub jobs: Vec<SnapshotJob>,
+    pub workers: Vec<u64>,
+}
+
 /// Raft node role
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RaftRole {
@@ -122,6 +144,12 @@ pub struct RaftState {
 
     // Votes received in current election (for candidates)
     pub votes_received: u64,
+
+    // Log compaction state
+    /// The index up to which the log has been compacted (log[0].index == log_offset + 1)
+    pub log_offset: u64,
+    /// The current snapshot (if any)
+    pub snapshot: Option<Snapshot>,
 }
 
 impl RaftState {
@@ -137,37 +165,64 @@ impl RaftState {
             role: RaftRole::Follower,
             leader_id: None,
             votes_received: 0,
+            log_offset: 0,
+            snapshot: None,
         }
     }
 
-    /// Get the last log index
+    /// Get the last log index (accounts for compacted entries)
     pub fn last_log_index(&self) -> u64 {
-        self.log.last().map(|e| e.index).unwrap_or(0)
+        self.log.last().map(|e| e.index).unwrap_or(self.log_offset)
     }
 
-    /// Get the last log term
+    /// Get the last log term (accounts for compacted entries)
     pub fn last_log_term(&self) -> u64 {
-        self.log.last().map(|e| e.term).unwrap_or(0)
+        self.log.last().map(|e| e.term).unwrap_or_else(|| {
+            self.snapshot
+                .as_ref()
+                .map(|s| s.last_included_term)
+                .unwrap_or(0)
+        })
     }
 
-    /// Get log entry at index (1-indexed)
+    /// Get the first available log index (log_offset + 1, or 0 if no compaction)
+    pub fn first_log_index(&self) -> u64 {
+        if self.log.is_empty() {
+            0
+        } else {
+            self.log_offset + 1
+        }
+    }
+
+    /// Check if a given index has been compacted away
+    pub fn is_compacted(&self, index: u64) -> bool {
+        index > 0 && index <= self.log_offset
+    }
+
+    /// Get log entry at index (1-indexed, offset-aware)
     pub fn get_entry(&self, index: u64) -> Option<&LogEntry> {
-        if index == 0 {
+        if index == 0 || index <= self.log_offset {
             return None;
         }
-        self.log.get((index - 1) as usize)
+        let vec_index = (index - self.log_offset - 1) as usize;
+        self.log.get(vec_index)
     }
 
-    /// Get entries starting from index (inclusive)
+    /// Get entries starting from index (inclusive, offset-aware)
     pub fn get_entries_from(&self, start_index: u64) -> Vec<LogEntry> {
-        if start_index == 0 {
-            return self.log.clone();
-        }
-        let start = (start_index - 1) as usize;
-        if start >= self.log.len() {
+        let effective_start = if start_index == 0 {
+            self.log_offset + 1
+        } else {
+            start_index.max(self.log_offset + 1)
+        };
+        if effective_start > self.last_log_index() {
             return Vec::new();
         }
-        self.log[start..].to_vec()
+        let vec_start = (effective_start - self.log_offset - 1) as usize;
+        if vec_start >= self.log.len() {
+            return Vec::new();
+        }
+        self.log[vec_start..].to_vec()
     }
 
     /// Append a new entry to the log
@@ -183,17 +238,59 @@ impl RaftState {
         &self.log[self.log.len() - 1]
     }
 
-    /// Truncate log from index (inclusive) and append new entries
+    /// Truncate log from index (inclusive) and append new entries (offset-aware)
     pub fn truncate_and_append(&mut self, from_index: u64, entries: Vec<LogEntry>) {
-        if from_index > 0 {
-            let truncate_at = (from_index - 1) as usize;
-            if truncate_at < self.log.len() {
-                self.log.truncate(truncate_at);
-            }
-        } else {
+        if from_index <= self.log_offset {
+            // Truncation point is within compacted region; clear all and append
             self.log.clear();
+        } else {
+            let vec_index = (from_index - self.log_offset - 1) as usize;
+            if vec_index < self.log.len() {
+                self.log.truncate(vec_index);
+            }
         }
         self.log.extend(entries);
+    }
+
+    /// Compact the log by replacing committed entries up through the snapshot's
+    /// last_included_index with a snapshot. Called on the leader (or any node)
+    /// after applying entries.
+    pub fn compact_log(&mut self, snapshot: Snapshot) {
+        let new_offset = snapshot.last_included_index;
+        if new_offset <= self.log_offset {
+            return; // Already compacted past this point
+        }
+        // Drain entries up through new_offset
+        let entries_to_drop = (new_offset - self.log_offset) as usize;
+        if entries_to_drop >= self.log.len() {
+            self.log.clear();
+        } else {
+            self.log = self.log.split_off(entries_to_drop);
+        }
+        self.log_offset = new_offset;
+        self.snapshot = Some(snapshot);
+    }
+
+    /// Install a snapshot received from the leader. Replaces local state.
+    /// Returns true if the snapshot was installed (newer than current state).
+    pub fn install_snapshot(&mut self, snapshot: Snapshot) -> bool {
+        if snapshot.last_included_index <= self.log_offset {
+            return false; // We already have a newer snapshot
+        }
+        let new_offset = snapshot.last_included_index;
+        // Discard any log entries covered by the snapshot
+        let first_kept = new_offset + 1;
+        self.log.retain(|e| e.index >= first_kept);
+        self.log_offset = new_offset;
+        // Update commit_index and last_applied to at least the snapshot point
+        if self.commit_index < new_offset {
+            self.commit_index = new_offset;
+        }
+        if self.last_applied < new_offset {
+            self.last_applied = new_offset;
+        }
+        self.snapshot = Some(snapshot);
+        true
     }
 
     /// Check if candidate's log is at least as up-to-date as ours

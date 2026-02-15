@@ -16,6 +16,7 @@ A distributed job scheduler with custom Raft consensus, similar to Nomad or Kube
 - **Graceful Shutdown** - SIGTERM/SIGINT handling with drain period for in-flight work
 - **Leader Draining & Transfer** - Voluntary leadership transfer and node draining for safe maintenance
 - **Batch Replication** - Multiple job status updates batched into a single Raft log entry for reduced consensus overhead
+- **Log Compaction** - Automatic in-memory log prefix truncation with snapshot transfer to slow followers
 
 ## Requirements
 
@@ -504,6 +505,21 @@ nomad-lite log list
 # Showing 6 entries
 ```
 
+**View log entries after compaction:**
+
+When log compaction has occurred, earlier entries are replaced by a snapshot:
+
+```bash
+nomad-lite log list
+# Raft Log Entries
+# ================================================================================
+# First Available: 1001  |  Commit Index: 1050  |  Last Log Index: 1050
+# (Entries 1-1000 were compacted into a snapshot)
+#
+# INDEX  TERM   COMMITTED  TYPE                 DETAILS
+# ...
+```
+
 **View log entries with pagination:**
 
 ```bash
@@ -601,6 +617,14 @@ curl http://localhost:8081/api/jobs
 |--------|-------------|
 | `GetJobOutput(job_id)` | Fetch job output from the node that executed it |
 
+**RaftService** (node-to-node, consensus protocol):
+
+| Method | Description |
+|--------|-------------|
+| `AppendEntries` | Log replication and heartbeats |
+| `RequestVote` | Leader election voting |
+| `InstallSnapshot` | Transfer compacted state to slow followers |
+
 ## Security
 
 ### mTLS
@@ -637,6 +661,10 @@ Jobs run in isolated containers with:
 2. Leader appends to log and replicates via `AppendEntries`
 3. Majority acknowledgment → committed
 4. Applied to state machine
+
+### Log Compaction
+
+When the in-memory log exceeds 1000 entries, the committed prefix is replaced with a snapshot of the current state (job queue + worker registrations). This bounds memory usage regardless of throughput. Followers that fall too far behind receive the snapshot via `InstallSnapshot` RPC instead of replaying individual entries.
 
 ### Safety Guarantees
 
@@ -678,4 +706,5 @@ cargo test --test <name>  # Specific test suite
 | `dashboard_tests` | REST API endpoints |
 | `leadership_transfer_tests` | Voluntary leadership transfer, auto-select, non-leader rejection |
 | `drain_tests` | Node draining, job rejection during drain, leadership handoff |
+| `compaction_tests` | Log compaction trigger, snapshot transfer to slow followers, state consistency |
 

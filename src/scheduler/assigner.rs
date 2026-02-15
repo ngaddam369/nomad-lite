@@ -122,4 +122,9 @@ impl JobAssigner {
             .map(|w| w.id)
             .collect()
     }
+
+    /// Clear all workers (used during snapshot rebuild)
+    pub fn clear(&mut self) {
+        self.workers.clear();
+    }
 }

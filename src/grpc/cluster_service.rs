@@ -6,8 +6,8 @@ use tonic::{Request, Response, Status};
 
 use crate::proto::raft_service_server::RaftService;
 use crate::proto::{
-    AppendEntriesRequest, AppendEntriesResponse, TimeoutNowRequest, TimeoutNowResponse,
-    VoteRequest, VoteResponse,
+    AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
+    TimeoutNowRequest, TimeoutNowResponse, VoteRequest, VoteResponse,
 };
 use crate::raft::RaftNode;
 
@@ -103,6 +103,37 @@ impl RaftService for ClusterService {
             Err(_) => {
                 tracing::error!("Panic in TimeoutNow handler");
                 Err(Status::internal("Internal error in TimeoutNow handler"))
+            }
+        }
+    }
+
+    async fn install_snapshot(
+        &self,
+        request: Request<InstallSnapshotRequest>,
+    ) -> Result<Response<InstallSnapshotResponse>, Status> {
+        let req = request.into_inner();
+        tracing::info!(
+            leader_id = req.leader_id,
+            term = req.term,
+            last_included_index = req.last_included_index,
+            "Received InstallSnapshot"
+        );
+
+        let node = self.raft_node.clone();
+        let result = AssertUnwindSafe(async { node.handle_install_snapshot(req).await })
+            .catch_unwind()
+            .await;
+
+        match result {
+            Ok(Ok(response)) => Ok(Response::new(response)),
+            Ok(Err(e)) => Err(Status::internal(format!(
+                "InstallSnapshot handler error: {e}"
+            ))),
+            Err(_) => {
+                tracing::error!("Panic in InstallSnapshot handler");
+                Err(Status::internal(
+                    "Internal error in InstallSnapshot handler",
+                ))
             }
         }
     }

@@ -457,45 +457,42 @@ impl SchedulerService for ClientService {
         let state = self.raft_node.state.read().await;
         let commit_index = state.commit_index;
         let last_log_index = state.last_log_index();
-
-        // Determine start index (1-indexed, 0 means from beginning)
-        let start_index = if req.start_index == 0 {
-            1
-        } else {
-            req.start_index
-        };
-
-        // Convert 1-indexed start_index to 0-indexed array position
-        // Log entries are 1-indexed, so entry at index N is at position N-1
-        let start_pos = if start_index == 0 {
+        let log_offset = state.log_offset;
+        let first_available_index = if state.log.is_empty() {
             0
         } else {
-            (start_index - 1) as usize
+            log_offset + 1
         };
 
-        // Efficiently slice the log directly instead of filtering O(n)
-        let entries: Vec<RaftLogEntryInfo> = if start_pos >= state.log.len() {
-            Vec::new()
+        // Determine start index (1-indexed, 0 means from beginning)
+        // Clamp to first available index (entries before that were compacted)
+        let start_index = if req.start_index == 0 {
+            first_available_index.max(1)
         } else {
-            let end_pos = (start_pos + limit).min(state.log.len());
-            state.log[start_pos..end_pos]
-                .iter()
-                .map(|entry| {
-                    let proto_entry = log_entry_to_proto(entry);
-                    RaftLogEntryInfo {
-                        index: entry.index,
-                        term: entry.term,
-                        command: proto_entry.command,
-                        is_committed: entry.index <= commit_index,
-                    }
-                })
-                .collect()
+            req.start_index.max(first_available_index)
         };
+
+        // Use offset-aware accessor
+        let all_from_start = state.get_entries_from(start_index);
+        let entries: Vec<RaftLogEntryInfo> = all_from_start
+            .iter()
+            .take(limit)
+            .map(|entry| {
+                let proto_entry = log_entry_to_proto(entry);
+                RaftLogEntryInfo {
+                    index: entry.index,
+                    term: entry.term,
+                    command: proto_entry.command,
+                    is_committed: entry.index <= commit_index,
+                }
+            })
+            .collect();
 
         Ok(Response::new(GetRaftLogEntriesResponse {
             entries,
             commit_index,
             last_log_index,
+            first_available_index,
         }))
     }
 

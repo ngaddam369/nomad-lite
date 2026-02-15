@@ -1,10 +1,10 @@
 use chrono::{DateTime, TimeZone, Utc};
 
 use crate::proto::{
-    AppendEntriesRequest, AppendEntriesResponse, LogEntry as ProtoLogEntry, VoteRequest,
-    VoteResponse,
+    AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
+    LogEntry as ProtoLogEntry, VoteRequest, VoteResponse,
 };
-use crate::raft::state::{Command, JobStatusUpdate, LogEntry, RaftState};
+use crate::raft::state::{Command, JobStatusUpdate, LogEntry, RaftState, Snapshot, SnapshotJob};
 use crate::scheduler::JobStatus;
 use uuid::Uuid;
 
@@ -74,26 +74,45 @@ pub fn handle_append_entries(
     }
     state.leader_id = Some(req.leader_id);
 
-    // Check if we have the prev_log entry
+    // Check if we have the prev_log entry (offset-aware)
     if req.prev_log_index > 0 {
-        match state.get_entry(req.prev_log_index) {
-            None => {
-                // We don't have the entry at prev_log_index
-                return Ok(AppendEntriesResponse {
-                    term: state.current_term,
-                    success: false,
-                    match_index: state.last_log_index(),
-                });
-            }
-            Some(entry) => {
-                if entry.term != req.prev_log_term {
-                    // Term mismatch - truncate and reject
-                    state.log.truncate((req.prev_log_index - 1) as usize);
+        if req.prev_log_index < state.log_offset {
+            // prev_log_index is within the compacted region — already applied via snapshot, accept
+        } else if req.prev_log_index == state.log_offset {
+            // Verify term against snapshot
+            if let Some(ref snapshot) = state.snapshot {
+                if snapshot.last_included_term != req.prev_log_term {
                     return Ok(AppendEntriesResponse {
                         term: state.current_term,
                         success: false,
                         match_index: state.last_log_index(),
                     });
+                }
+            }
+            // If no snapshot but log_offset == 0, this is the initial state — accept
+        } else {
+            // prev_log_index > log_offset — check the actual log
+            match state.get_entry(req.prev_log_index) {
+                None => {
+                    return Ok(AppendEntriesResponse {
+                        term: state.current_term,
+                        success: false,
+                        match_index: state.last_log_index(),
+                    });
+                }
+                Some(entry) => {
+                    if entry.term != req.prev_log_term {
+                        // Term mismatch - truncate from prev_log_index and reject
+                        let vec_index = (req.prev_log_index - state.log_offset - 1) as usize;
+                        if vec_index < state.log.len() {
+                            state.log.truncate(vec_index);
+                        }
+                        return Ok(AppendEntriesResponse {
+                            term: state.current_term,
+                            success: false,
+                            match_index: state.last_log_index(),
+                        });
+                    }
                 }
             }
         }
@@ -282,6 +301,83 @@ fn internal_status_to_proto(status: &JobStatus) -> crate::proto::JobStatus {
         JobStatus::Running => crate::proto::JobStatus::Running,
         JobStatus::Completed => crate::proto::JobStatus::Completed,
         JobStatus::Failed => crate::proto::JobStatus::Failed,
+    }
+}
+
+/// Handle InstallSnapshot RPC from the leader
+pub fn handle_install_snapshot(
+    state: &mut RaftState,
+    req: &InstallSnapshotRequest,
+    my_id: u64,
+) -> Result<InstallSnapshotResponse, String> {
+    // If request term is greater, update our term and become follower
+    if req.term > state.current_term {
+        state.become_follower(req.term);
+    }
+
+    // Reject if request term is less than our current term
+    if req.term < state.current_term {
+        return Ok(InstallSnapshotResponse {
+            term: state.current_term,
+        });
+    }
+
+    // Accept the leader
+    state.leader_id = Some(req.leader_id);
+
+    // Convert proto snapshot jobs to internal SnapshotJob
+    let jobs: Vec<SnapshotJob> = req.jobs.iter().filter_map(proto_to_snapshot_job).collect();
+
+    let snapshot = Snapshot {
+        last_included_index: req.last_included_index,
+        last_included_term: req.last_included_term,
+        jobs,
+        workers: req.workers.clone(),
+    };
+
+    let installed = state.install_snapshot(snapshot);
+
+    tracing::info!(
+        node_id = my_id,
+        last_included_index = req.last_included_index,
+        last_included_term = req.last_included_term,
+        installed,
+        "InstallSnapshot processed"
+    );
+
+    Ok(InstallSnapshotResponse {
+        term: state.current_term,
+    })
+}
+
+/// Convert a proto SnapshotJob to an internal SnapshotJob
+fn proto_to_snapshot_job(proto: &crate::proto::SnapshotJob) -> Option<SnapshotJob> {
+    Some(SnapshotJob {
+        id: Uuid::parse_str(&proto.job_id).ok()?,
+        command: proto.command.clone(),
+        status: proto_status_to_internal(
+            crate::proto::JobStatus::try_from(proto.status)
+                .unwrap_or(crate::proto::JobStatus::Unspecified),
+        ),
+        assigned_worker: proto.assigned_worker,
+        executed_by: proto.executed_by,
+        exit_code: proto.exit_code,
+        created_at: ms_to_datetime(proto.created_at_ms),
+        completed_at: proto.completed_at_ms.map(ms_to_datetime),
+    })
+}
+
+/// Convert an internal SnapshotJob to a proto SnapshotJob
+pub fn snapshot_job_to_proto(job: &SnapshotJob) -> crate::proto::SnapshotJob {
+    crate::proto::SnapshotJob {
+        job_id: job.id.to_string(),
+        command: job.command.clone(),
+        status: internal_status_to_proto(&job.status) as i32,
+        assigned_worker: job.assigned_worker,
+        executed_by: job.executed_by,
+        exit_code: job.exit_code,
+        created_at_ms: job.created_at.timestamp_millis(),
+        completed_at_ms: job.completed_at.map(|dt| dt.timestamp_millis()),
     }
 }
 

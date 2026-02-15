@@ -289,6 +289,7 @@ struct RaftLogOutput {
     entries: Vec<RaftLogEntryOutput>,
     commit_index: u64,
     last_log_index: u64,
+    first_available_index: u64,
 }
 
 // =============================================================================
@@ -854,6 +855,7 @@ async fn handle_log_list(
                 entries,
                 commit_index: response.commit_index,
                 last_log_index: response.last_log_index,
+                first_available_index: response.first_available_index,
             };
             println!("{}", serde_json::to_string_pretty(&output)?);
         }
@@ -863,10 +865,23 @@ async fn handle_log_list(
             } else {
                 println!("Raft Log Entries");
                 println!("{}", "=".repeat(80));
-                println!(
-                    "Commit Index: {}  |  Last Log Index: {}",
-                    response.commit_index, response.last_log_index
-                );
+                if response.first_available_index > 1 {
+                    println!(
+                        "First Available: {}  |  Commit Index: {}  |  Last Log Index: {}",
+                        response.first_available_index,
+                        response.commit_index,
+                        response.last_log_index
+                    );
+                    println!(
+                        "(Entries 1-{} were compacted into a snapshot)",
+                        response.first_available_index - 1
+                    );
+                } else {
+                    println!(
+                        "Commit Index: {}  |  Last Log Index: {}",
+                        response.commit_index, response.last_log_index
+                    );
+                }
                 println!();
                 println!(
                     "{:<6} {:<6} {:<10} {:<20} DETAILS",

@@ -8,9 +8,12 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::NodeConfig;
 use crate::proto::raft_service_client::RaftServiceClient;
-use crate::proto::{AppendEntriesRequest, TimeoutNowRequest, VoteRequest};
-use crate::raft::rpc::{handle_append_entries, handle_request_vote, log_entry_to_proto};
-use crate::raft::state::{Command, RaftRole, RaftState};
+use crate::proto::{AppendEntriesRequest, InstallSnapshotRequest, TimeoutNowRequest, VoteRequest};
+use crate::raft::rpc::{
+    handle_append_entries, handle_install_snapshot, handle_request_vote, log_entry_to_proto,
+    snapshot_job_to_proto,
+};
+use crate::raft::state::{Command, RaftRole, RaftState, Snapshot};
 use crate::raft::timer::random_election_timeout;
 use crate::tls::TlsIdentity;
 
@@ -52,6 +55,10 @@ pub struct RaftNode {
     peer_last_seen: Arc<RwLock<HashMap<u64, Instant>>>,
     /// TLS identity for secure peer connections
     tls_identity: Option<TlsIdentity>,
+    /// Pending snapshot installed by a leader — the scheduler loop must rebuild
+    /// state machines from this snapshot. Uses a Mutex<Option<Snapshot>> as a
+    /// simple flag/channel.
+    pending_snapshot: Arc<tokio::sync::Mutex<Option<Snapshot>>>,
 }
 
 impl RaftNode {
@@ -74,6 +81,7 @@ impl RaftNode {
             commit_notify_rx,
             peer_last_seen: Arc::new(RwLock::new(HashMap::new())),
             tls_identity,
+            pending_snapshot: Arc::new(tokio::sync::Mutex::new(None)),
         };
 
         (node, message_rx)
@@ -385,11 +393,13 @@ impl RaftNode {
         let term = state.current_term;
         let commit_index = state.commit_index;
         let next_index = state.next_index.clone();
+        let log_offset = state.log_offset;
+        let snapshot = state.snapshot.clone();
 
         // Only clone log entries that might be needed for replication.
         // Start from (min_next_index - 1) to include the entry needed for prev_log_term.
         let min_next_index = next_index.values().copied().min().unwrap_or(1);
-        let entries_start = min_next_index.saturating_sub(1).max(1);
+        let entries_start = min_next_index.saturating_sub(1).max(log_offset + 1);
         let log_entries = state.get_entries_from(entries_start);
         drop(state);
 
@@ -397,9 +407,65 @@ impl RaftNode {
 
         for (peer_id, client) in peers.iter() {
             let peer_next_index = *next_index.get(peer_id).unwrap_or(&1);
+
+            // If the peer is too far behind (needs compacted entries), send snapshot
+            if peer_next_index <= log_offset {
+                if let Some(ref snapshot) = snapshot {
+                    let req = InstallSnapshotRequest {
+                        term,
+                        leader_id: self.id,
+                        last_included_index: snapshot.last_included_index,
+                        last_included_term: snapshot.last_included_term,
+                        jobs: snapshot.jobs.iter().map(snapshot_job_to_proto).collect(),
+                        workers: snapshot.workers.clone(),
+                    };
+
+                    let mut client = client.clone();
+                    let peer_id = *peer_id;
+                    let state = self.state.clone();
+                    let peer_last_seen = self.peer_last_seen.clone();
+                    let snapshot_last = snapshot.last_included_index;
+
+                    tokio::spawn(async move {
+                        match timeout(Duration::from_millis(500), client.install_snapshot(req))
+                            .await
+                        {
+                            Ok(Ok(response)) => {
+                                let resp = response.into_inner();
+                                peer_last_seen.write().await.insert(peer_id, Instant::now());
+
+                                let mut state = state.write().await;
+                                if resp.term > state.current_term {
+                                    state.become_follower(resp.term);
+                                    return;
+                                }
+                                // Advance next_index past the snapshot
+                                state.next_index.insert(peer_id, snapshot_last + 1);
+                                state.match_index.insert(peer_id, snapshot_last);
+                                tracing::info!(
+                                    peer_id,
+                                    snapshot_last,
+                                    "Snapshot sent to slow follower"
+                                );
+                            }
+                            Ok(Err(e)) => {
+                                tracing::trace!(peer_id, error = %e, "InstallSnapshot failed");
+                            }
+                            Err(_) => {
+                                tracing::trace!(peer_id, "InstallSnapshot timed out");
+                            }
+                        }
+                    });
+                    continue; // Skip normal AppendEntries for this peer
+                }
+            }
+
             let prev_log_index = peer_next_index.saturating_sub(1);
             let prev_log_term = if prev_log_index == 0 {
                 0
+            } else if prev_log_index == log_offset {
+                // Term from snapshot
+                snapshot.as_ref().map(|s| s.last_included_term).unwrap_or(0)
             } else {
                 log_entries
                     .iter()
@@ -680,6 +746,36 @@ impl RaftNode {
             term: new_term,
             success: true,
         })
+    }
+
+    /// Handle incoming InstallSnapshot RPC
+    pub async fn handle_install_snapshot(
+        &self,
+        req: InstallSnapshotRequest,
+    ) -> Result<crate::proto::InstallSnapshotResponse, String> {
+        let mut state = self.state.write().await;
+        let response = handle_install_snapshot(&mut state, &req, self.id)?;
+
+        // If the snapshot was installed, store it for the scheduler loop to rebuild state
+        if state.snapshot.is_some() && state.log_offset >= req.last_included_index {
+            if let Some(ref snapshot) = state.snapshot {
+                let mut pending = self.pending_snapshot.lock().await;
+                *pending = Some(snapshot.clone());
+            }
+            // Notify commit watchers so the scheduler loop wakes up
+            let _ = self.commit_notify_tx.send(state.commit_index);
+        }
+
+        // Reset election timeout
+        drop(state);
+        *self.last_heartbeat.write().await = Instant::now();
+
+        Ok(response)
+    }
+
+    /// Take the pending snapshot (if any) for the scheduler loop to process.
+    pub async fn take_pending_snapshot(&self) -> Option<Snapshot> {
+        self.pending_snapshot.lock().await.take()
     }
 
     /// Check if this node is the leader

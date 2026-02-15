@@ -13,6 +13,9 @@ service RaftService {
 
     // Tell a follower to immediately start an election (leadership transfer)
     rpc TimeoutNow(TimeoutNowRequest) returns (TimeoutNowResponse);
+
+    // Install a snapshot on a follower that is too far behind
+    rpc InstallSnapshot(InstallSnapshotRequest) returns (InstallSnapshotResponse);
 }
 
 message VoteRequest {
@@ -57,6 +60,30 @@ message LogEntry {
     uint64 term = 1;
     uint64 index = 2;
     Command command = 3;
+}
+
+message InstallSnapshotRequest {
+    uint64 term = 1;
+    uint64 leader_id = 2;
+    uint64 last_included_index = 3;
+    uint64 last_included_term = 4;
+    repeated SnapshotJob jobs = 5;
+    repeated uint64 workers = 6;
+}
+
+message SnapshotJob {
+    string job_id = 1;
+    string command = 2;
+    JobStatus status = 3;
+    uint64 assigned_worker = 4;
+    uint64 executed_by = 5;
+    optional int32 exit_code = 6;
+    int64 created_at_ms = 7;
+    optional int64 completed_at_ms = 8;
+}
+
+message InstallSnapshotResponse {
+    uint64 term = 1;
 }
 
 message Command {
@@ -215,6 +242,8 @@ message GetRaftLogEntriesResponse {
     uint64 commit_index = 2;
     // Last log index (total entries in log)
     uint64 last_log_index = 3;
+    // First available index (entries before this were compacted)
+    uint64 first_available_index = 4;
 }
 
 message RaftLogEntryInfo {

@@ -16,10 +16,13 @@ use chrono::Utc;
 use nomad_lite::config::{NodeConfig, PeerConfig, SandboxConfig, TlsConfig};
 use nomad_lite::grpc::GrpcServer;
 use nomad_lite::raft::node::RaftMessage;
-use nomad_lite::raft::state::{Command, RaftRole};
+use nomad_lite::raft::state::{Command, RaftRole, Snapshot, SnapshotJob};
 use nomad_lite::raft::RaftNode;
 use nomad_lite::scheduler::{Job, JobQueue};
 use tokio_util::sync::CancellationToken;
+
+/// Minimum log length before compaction is triggered in tests
+const LOG_COMPACTION_THRESHOLD: usize = 1000;
 
 /// Test node configuration with shorter timeouts for faster tests
 pub fn test_node_config(node_id: u64, port: u16, peers: Vec<(u64, u16)>) -> NodeConfig {
@@ -68,9 +71,9 @@ impl TestNode {
         self.raft_node.state.read().await.current_term
     }
 
-    /// Get the log length
+    /// Get the log length (accounts for compacted entries)
     pub async fn log_len(&self) -> usize {
-        self.raft_node.state.read().await.log.len()
+        self.raft_node.state.read().await.last_log_index() as usize
     }
 
     /// Get the known leader ID
@@ -188,13 +191,24 @@ impl TestCluster {
         }
     }
 
-    /// Simplified scheduler loop that applies committed entries to job queue
+    /// Simplified scheduler loop that applies committed entries to job queue,
+    /// triggers log compaction, and handles snapshot installation.
     async fn scheduler_loop(raft_node: Arc<RaftNode>, job_queue: Arc<RwLock<JobQueue>>) {
         let mut commit_rx = raft_node.subscribe_commits();
 
         loop {
             if commit_rx.changed().await.is_err() {
                 break;
+            }
+
+            // Check for pending snapshot from InstallSnapshot RPC
+            if let Some(snapshot) = raft_node.take_pending_snapshot().await {
+                let mut queue = job_queue.write().await;
+                queue.clear();
+                for snap_job in &snapshot.jobs {
+                    queue.add_job(Job::from_snapshot(snap_job));
+                }
+                continue;
             }
 
             // Apply committed entries
@@ -242,7 +256,62 @@ impl TestCluster {
                     Command::RegisterWorker { .. } | Command::Noop => {}
                 }
             }
+
+            // Trigger log compaction if log is large enough
+            Self::maybe_compact_log(&raft_node, &job_queue).await;
         }
+    }
+
+    /// Check if log compaction should be triggered
+    async fn maybe_compact_log(raft_node: &Arc<RaftNode>, job_queue: &Arc<RwLock<JobQueue>>) {
+        let state = raft_node.state.read().await;
+        if state.log.len() < LOG_COMPACTION_THRESHOLD {
+            return;
+        }
+        let last_applied = state.last_applied;
+        if last_applied == 0 {
+            return;
+        }
+        let last_applied_term = state
+            .get_entry(last_applied)
+            .map(|e| e.term)
+            .or_else(|| {
+                state
+                    .snapshot
+                    .as_ref()
+                    .filter(|s| s.last_included_index == last_applied)
+                    .map(|s| s.last_included_term)
+            })
+            .unwrap_or(0);
+        drop(state);
+
+        // Build snapshot from job queue
+        let queue = job_queue.read().await;
+        let jobs: Vec<SnapshotJob> = queue
+            .all_jobs()
+            .into_iter()
+            .map(|job| SnapshotJob {
+                id: job.id,
+                command: job.command.clone(),
+                status: job.status,
+                assigned_worker: job.assigned_worker.unwrap_or(0),
+                executed_by: job.executed_by.unwrap_or(0),
+                exit_code: job.exit_code,
+                created_at: job.created_at,
+                completed_at: job.completed_at,
+            })
+            .collect();
+        drop(queue);
+
+        let snapshot = Snapshot {
+            last_included_index: last_applied,
+            last_included_term: last_applied_term,
+            jobs,
+            workers: Vec::new(),
+        };
+
+        let mut state = raft_node.state.write().await;
+        state.compact_log(snapshot);
     }
 
     /// Wait for leader election with timeout

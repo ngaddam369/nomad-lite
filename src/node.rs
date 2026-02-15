@@ -8,13 +8,16 @@ use tokio_util::sync::CancellationToken;
 use crate::config::{NodeConfig, SandboxConfig};
 use crate::dashboard::{run_dashboard, DashboardState};
 use crate::grpc::GrpcServer;
-use crate::raft::state::JobStatusUpdate;
+use crate::raft::state::{JobStatusUpdate, Snapshot, SnapshotJob};
 use crate::raft::{Command, RaftNode};
 use crate::scheduler::assigner::JobAssigner;
 use crate::scheduler::{Job, JobQueue, JobStatus};
 use crate::shutdown::install_shutdown_handler;
 use crate::tls::TlsIdentity;
 use crate::worker::JobExecutor;
+
+/// Minimum log length before compaction is triggered
+const LOG_COMPACTION_THRESHOLD: usize = 1000;
 
 /// Main node that orchestrates all components
 pub struct Node {
@@ -229,6 +232,22 @@ impl Node {
                         break;
                     }
 
+                    // Check for pending snapshot from InstallSnapshot RPC
+                    if let Some(snapshot) = raft_node.take_pending_snapshot().await {
+                        Self::rebuild_from_snapshot(
+                            &snapshot,
+                            &job_queue,
+                            &job_assigner,
+                        ).await;
+                        tracing::info!(
+                            last_included_index = snapshot.last_included_index,
+                            jobs = snapshot.jobs.len(),
+                            workers = snapshot.workers.len(),
+                            "State rebuilt from snapshot"
+                        );
+                        continue;
+                    }
+
                     // Apply committed entries
                     let entries = raft_node.get_committed_entries().await;
                     let mut should_wake_assigner = false;
@@ -288,6 +307,9 @@ impl Node {
                     if should_wake_assigner {
                         job_notify.notify_one();
                     }
+
+                    // Trigger log compaction if log is large enough
+                    Self::maybe_compact_log(&raft_node, &job_queue, &job_assigner).await;
                 }
 
                 // Leader job assignment — wakes on new jobs or new workers
@@ -303,6 +325,108 @@ impl Node {
                     }
                 }
             }
+        }
+    }
+
+    /// Check if the log is large enough to warrant compaction, and if so, compact it.
+    async fn maybe_compact_log(
+        raft_node: &Arc<RaftNode>,
+        job_queue: &Arc<RwLock<JobQueue>>,
+        job_assigner: &Arc<RwLock<JobAssigner>>,
+    ) {
+        let state = raft_node.state.read().await;
+        if state.log.len() < LOG_COMPACTION_THRESHOLD {
+            return;
+        }
+        let last_applied = state.last_applied;
+        if last_applied == 0 {
+            return;
+        }
+        // Get the term of the last applied entry
+        let last_applied_term = state
+            .get_entry(last_applied)
+            .map(|e| e.term)
+            .or_else(|| {
+                state
+                    .snapshot
+                    .as_ref()
+                    .filter(|s| s.last_included_index == last_applied)
+                    .map(|s| s.last_included_term)
+            })
+            .unwrap_or(0);
+        drop(state);
+
+        // Build snapshot from current state machines
+        let snapshot =
+            Self::build_snapshot(last_applied, last_applied_term, job_queue, job_assigner).await;
+
+        // Compact the log
+        let mut state = raft_node.state.write().await;
+        let old_len = state.log.len();
+        state.compact_log(snapshot);
+        tracing::info!(
+            old_log_len = old_len,
+            new_log_len = state.log.len(),
+            log_offset = state.log_offset,
+            "Log compacted"
+        );
+    }
+
+    /// Build a snapshot from the current job queue and assigner state.
+    async fn build_snapshot(
+        last_applied: u64,
+        last_applied_term: u64,
+        job_queue: &Arc<RwLock<JobQueue>>,
+        job_assigner: &Arc<RwLock<JobAssigner>>,
+    ) -> Snapshot {
+        let queue = job_queue.read().await;
+        let assigner = job_assigner.read().await;
+
+        let jobs: Vec<SnapshotJob> = queue
+            .all_jobs()
+            .into_iter()
+            .map(|job| SnapshotJob {
+                id: job.id,
+                command: job.command.clone(),
+                status: job.status,
+                assigned_worker: job.assigned_worker.unwrap_or(0),
+                executed_by: job.executed_by.unwrap_or(0),
+                exit_code: job.exit_code,
+                created_at: job.created_at,
+                completed_at: job.completed_at,
+            })
+            .collect();
+
+        let workers: Vec<u64> = assigner.all_workers().iter().map(|w| w.id).collect();
+
+        Snapshot {
+            last_included_index: last_applied,
+            last_included_term: last_applied_term,
+            jobs,
+            workers,
+        }
+    }
+
+    /// Rebuild the job queue and assigner from a snapshot.
+    async fn rebuild_from_snapshot(
+        snapshot: &Snapshot,
+        job_queue: &Arc<RwLock<JobQueue>>,
+        job_assigner: &Arc<RwLock<JobAssigner>>,
+    ) {
+        let mut queue = job_queue.write().await;
+        let mut assigner = job_assigner.write().await;
+
+        // Clear current state
+        queue.clear();
+        assigner.clear();
+
+        // Rebuild from snapshot
+        for snap_job in &snapshot.jobs {
+            let job = Job::from_snapshot(snap_job);
+            queue.add_job(job);
+        }
+        for &worker_id in &snapshot.workers {
+            assigner.register_worker(worker_id);
         }
     }
 

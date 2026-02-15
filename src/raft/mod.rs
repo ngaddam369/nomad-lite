@@ -26,4 +26,4 @@ pub mod state;
 pub mod timer;
 
 pub use node::RaftNode;
-pub use state::{Command, LogEntry, RaftRole, RaftState};
+pub use state::{Command, LogEntry, RaftRole, RaftState, Snapshot, SnapshotJob};

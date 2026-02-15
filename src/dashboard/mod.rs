@@ -116,7 +116,7 @@ async fn cluster_status_handler(State(state): State<DashboardState>) -> impl Int
         },
         commit_index: raft_state.commit_index,
         last_applied: raft_state.last_applied,
-        log_length: raft_state.log.len(),
+        log_length: raft_state.last_log_index() as usize,
     })
 }
 

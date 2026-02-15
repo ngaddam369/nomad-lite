@@ -382,9 +382,10 @@ async fn test_view_raft_log_entries() {
     let state = leader.raft_node.state.read().await;
 
     // Verify log entries are in order
-    assert_eq!(state.log.len(), 5, "Should have 5 log entries");
+    assert_eq!(state.last_log_index(), 5, "Should have 5 log entries");
 
-    for (i, entry) in state.log.iter().enumerate() {
+    let all_entries = state.get_entries_from(1);
+    for (i, entry) in all_entries.iter().enumerate() {
         assert_eq!(
             entry.index,
             (i + 1) as u64,
@@ -397,7 +398,7 @@ async fn test_view_raft_log_entries() {
     }
 
     // Verify entries can be converted to proto format
-    for entry in state.log.iter() {
+    for entry in all_entries.iter() {
         let proto = log_entry_to_proto(entry);
         assert_eq!(proto.index, entry.index);
         assert_eq!(proto.term, entry.term);
@@ -436,9 +437,9 @@ async fn test_raft_log_commit_status() {
     let state = leader.raft_node.state.read().await;
 
     assert!(state.commit_index >= 1, "Commit index should be at least 1");
-    assert_eq!(state.log.len(), 1, "Should have 1 log entry");
+    assert_eq!(state.last_log_index(), 1, "Should have 1 log entry");
 
-    let entry = &state.log[0];
+    let entry = state.get_entry(1).expect("Entry 1 should exist");
     assert!(
         entry.index <= state.commit_index,
         "Entry should be committed"
@@ -463,7 +464,7 @@ async fn test_empty_raft_log() {
     let leader = cluster.get_node(leader_id).unwrap();
 
     let state = leader.raft_node.state.read().await;
-    assert_eq!(state.log.len(), 0, "Log should be empty");
+    assert_eq!(state.last_log_index(), 0, "Log should be empty");
     assert_eq!(state.commit_index, 0, "Commit index should be 0");
 
     drop(state);
@@ -498,10 +499,11 @@ async fn test_raft_log_command_types() {
     let leader = cluster.get_node(leader_id).unwrap();
 
     let state = leader.raft_node.state.read().await;
-    assert_eq!(state.log.len(), 1, "Should have 1 log entry");
+    assert_eq!(state.last_log_index(), 1, "Should have 1 log entry");
 
     // Verify the command is a SubmitJob
-    match &state.log[0].command {
+    let first_entry = state.get_entry(1).expect("Entry 1 should exist");
+    match &first_entry.command {
         nomad_lite::raft::Command::SubmitJob {
             job_id: entry_job_id,
             command,
@@ -549,18 +551,7 @@ async fn test_raft_log_pagination_beyond_length() {
     let state = leader.raft_node.state.read().await;
 
     // Simulate pagination beyond log length (start_index = 100 when log has 3 entries)
-    let start_pos = 99usize; // 100 - 1 for 0-indexed
-    assert!(
-        start_pos >= state.log.len(),
-        "Start position should be beyond log length"
-    );
-
-    // This would return empty in the actual implementation
-    let entries_from_beyond: Vec<_> = if start_pos >= state.log.len() {
-        Vec::new()
-    } else {
-        state.log[start_pos..].to_vec()
-    };
+    let entries_from_beyond = state.get_entries_from(100);
     assert!(
         entries_from_beyond.is_empty(),
         "Should return empty when start_index is beyond log length"
@@ -601,17 +592,9 @@ async fn test_raft_log_pagination_limit_exceeds_entries() {
 
     let state = leader.raft_node.state.read().await;
 
-    // Request limit of 1000 when only 5 entries exist
-    let limit = 1000usize;
-    let start_pos = 0usize;
-    let end_pos = (start_pos + limit).min(state.log.len());
-
-    let entries: Vec<_> = state.log[start_pos..end_pos].to_vec();
-    assert_eq!(
-        entries.len(),
-        5,
-        "Should return all 5 entries even though limit is 1000"
-    );
+    // Request all entries (limit larger than available)
+    let entries = state.get_entries_from(1);
+    assert_eq!(entries.len(), 5, "Should return all 5 entries");
 
     drop(state);
     cluster.shutdown().await;
@@ -656,7 +639,7 @@ async fn test_raft_log_accessible_from_follower() {
     let follower_state = follower.raft_node.state.read().await;
 
     assert_eq!(
-        follower_state.log.len(),
+        follower_state.last_log_index(),
         3,
         "Follower should have 3 log entries"
     );
@@ -665,16 +648,18 @@ async fn test_raft_log_accessible_from_follower() {
     let leader = cluster.get_node(leader_id).unwrap();
     let leader_state = leader.raft_node.state.read().await;
 
-    for i in 0..3 {
+    for idx in 1..=3u64 {
+        let follower_entry = follower_state.get_entry(idx).expect("Entry should exist");
+        let leader_entry = leader_state.get_entry(idx).expect("Entry should exist");
         assert_eq!(
-            follower_state.log[i].index, leader_state.log[i].index,
+            follower_entry.index, leader_entry.index,
             "Entry {} index should match",
-            i
+            idx
         );
         assert_eq!(
-            follower_state.log[i].term, leader_state.log[i].term,
+            follower_entry.term, leader_entry.term,
             "Entry {} term should match",
-            i
+            idx
         );
     }
 

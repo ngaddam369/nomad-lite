@@ -186,4 +186,9 @@ impl JobQueue {
     pub fn is_full(&self) -> bool {
         self.jobs.len() >= self.max_jobs
     }
+
+    /// Clear all jobs from the queue (used during snapshot rebuild)
+    pub fn clear(&mut self) {
+        self.jobs.clear();
+    }
 }
