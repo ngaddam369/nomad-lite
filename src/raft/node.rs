@@ -39,6 +39,18 @@ pub enum RaftMessage {
 /// Timeout for considering a peer as dead (3 seconds)
 const PEER_TIMEOUT_MS: u64 = 3000;
 
+/// Aborts the wrapped task handle when dropped.
+///
+/// This ensures the dedicated heartbeat task is killed whenever `run()` exits,
+/// regardless of whether the exit is via graceful `CancellationToken` shutdown or
+/// an external `JoinHandle::abort()` (as used by the test harness).
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// The main Raft node that coordinates consensus
 pub struct RaftNode {
     pub id: u64,
@@ -47,6 +59,11 @@ pub struct RaftNode {
     peers: Arc<Mutex<HashMap<u64, RaftServiceClient<Channel>>>>,
     /// Peers temporarily disconnected to simulate network partitions (for testing)
     disconnected_peers: Arc<Mutex<HashMap<u64, RaftServiceClient<Channel>>>>,
+    /// Dedicated clients used only for sending empty heartbeat AppendEntries.
+    /// Separate TCP connections ensure large replication payloads never block heartbeats.
+    heartbeat_peers: Arc<Mutex<HashMap<u64, RaftServiceClient<Channel>>>>,
+    /// Heartbeat clients temporarily removed during network partition simulation.
+    disconnected_heartbeat_peers: Arc<Mutex<HashMap<u64, RaftServiceClient<Channel>>>>,
     message_tx: mpsc::Sender<RaftMessage>,
     last_heartbeat: Arc<RwLock<Instant>>,
     commit_notify_tx: watch::Sender<u64>,
@@ -75,6 +92,8 @@ impl RaftNode {
             config,
             peers: Arc::new(Mutex::new(HashMap::new())),
             disconnected_peers: Arc::new(Mutex::new(HashMap::new())),
+            heartbeat_peers: Arc::new(Mutex::new(HashMap::new())),
+            disconnected_heartbeat_peers: Arc::new(Mutex::new(HashMap::new())),
             message_tx,
             last_heartbeat: Arc::new(RwLock::new(Instant::now())),
             commit_notify_tx,
@@ -118,6 +137,7 @@ impl RaftNode {
     /// Connect to peer nodes
     pub async fn connect_to_peers(&self) {
         let mut peers = self.peers.lock().await;
+        let mut hb_peers = self.heartbeat_peers.lock().await;
         for peer_config in &self.config.peers {
             if peers.contains_key(&peer_config.node_id) {
                 continue;
@@ -130,7 +150,7 @@ impl RaftNode {
                 (format!("http://{}", peer_config.addr), "http")
             };
 
-            // Create endpoint
+            // Create endpoint for data channel
             let endpoint = match Endpoint::from_shared(uri.clone()) {
                 Ok(ep) => ep,
                 Err(e) => {
@@ -144,7 +164,10 @@ impl RaftNode {
                 }
             };
 
-            // Configure TLS if identity is available
+            // Clone endpoint before it is consumed by the first connect call
+            let hb_endpoint = endpoint.clone();
+
+            // Configure TLS and connect data channel
             let connect_result = if let Some(ref tls_identity) = self.tls_identity {
                 let tls_config = tls_identity.client_tls_config();
                 match endpoint.tls_config(tls_config) {
@@ -173,6 +196,41 @@ impl RaftNode {
                         "Connected to peer"
                     );
                     peers.insert(peer_config.node_id, client);
+
+                    // Create a second independent channel for heartbeats so that
+                    // large replication payloads on the data channel never delay heartbeats.
+                    let hb_connect_result = if let Some(ref tls_identity) = self.tls_identity {
+                        let tls_config = tls_identity.client_tls_config();
+                        match hb_endpoint.tls_config(tls_config) {
+                            Ok(ep) => ep.connect().await,
+                            Err(e) => {
+                                tracing::warn!(
+                                    peer_id = peer_config.node_id,
+                                    addr = %peer_config.addr,
+                                    error = %e,
+                                    "Failed to configure TLS for heartbeat channel"
+                                );
+                                continue;
+                            }
+                        }
+                    } else {
+                        hb_endpoint.connect().await
+                    };
+
+                    match hb_connect_result {
+                        Ok(hb_channel) => {
+                            hb_peers
+                                .insert(peer_config.node_id, RaftServiceClient::new(hb_channel));
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                peer_id = peer_config.node_id,
+                                addr = %peer_config.addr,
+                                error = %e,
+                                "Failed to connect heartbeat channel to peer"
+                            );
+                        }
+                    }
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -203,6 +261,12 @@ impl RaftNode {
         if let Some(client) = peers.remove(&peer_id) {
             disconnected.insert(peer_id, client);
         }
+        // Also cut the heartbeat channel so no keep-alives leak through during a partition.
+        let mut hb_peers = self.heartbeat_peers.lock().await;
+        let mut hb_disconnected = self.disconnected_heartbeat_peers.lock().await;
+        if let Some(client) = hb_peers.remove(&peer_id) {
+            hb_disconnected.insert(peer_id, client);
+        }
     }
 
     /// Reconnect a previously disconnected peer.
@@ -213,6 +277,12 @@ impl RaftNode {
         if let Some(client) = disconnected.remove(&peer_id) {
             peers.insert(peer_id, client);
         }
+        // Restore the heartbeat channel as well.
+        let mut hb_peers = self.heartbeat_peers.lock().await;
+        let mut hb_disconnected = self.disconnected_heartbeat_peers.lock().await;
+        if let Some(client) = hb_disconnected.remove(&peer_id) {
+            hb_peers.insert(peer_id, client);
+        }
     }
 
     /// Disconnect from all peers (full isolation).
@@ -222,6 +292,12 @@ impl RaftNode {
         for (id, client) in peers.drain() {
             disconnected.insert(id, client);
         }
+        // Also cut all heartbeat channels.
+        let mut hb_peers = self.heartbeat_peers.lock().await;
+        let mut hb_disconnected = self.disconnected_heartbeat_peers.lock().await;
+        for (id, client) in hb_peers.drain() {
+            hb_disconnected.insert(id, client);
+        }
     }
 
     /// Reconnect all previously disconnected peers.
@@ -230,6 +306,12 @@ impl RaftNode {
         let mut disconnected = self.disconnected_peers.lock().await;
         for (id, client) in disconnected.drain() {
             peers.insert(id, client);
+        }
+        // Restore all heartbeat channels.
+        let mut hb_peers = self.heartbeat_peers.lock().await;
+        let mut hb_disconnected = self.disconnected_heartbeat_peers.lock().await;
+        for (id, client) in hb_disconnected.drain() {
+            hb_peers.insert(id, client);
         }
     }
 
@@ -243,6 +325,92 @@ impl RaftNode {
             self.config.election_timeout_min_ms,
             self.config.election_timeout_max_ms,
         );
+
+        // Spawn a dedicated heartbeat task that runs independently of the main event loop.
+        // By using a separate gRPC channel (heartbeat_peers) the heartbeats are never
+        // queued behind large log-replication payloads on the data channel.
+        //
+        // _hb_guard aborts the spawned task whenever run() exits, covering both graceful
+        // CancellationToken shutdown and abrupt JoinHandle::abort() termination.
+        let _hb_guard = {
+            let state = self.state.clone();
+            let heartbeat_peers = self.heartbeat_peers.clone();
+            let peer_last_seen = self.peer_last_seen.clone();
+            let node_id = self.id;
+            let heartbeat_interval_ms = self.config.heartbeat_interval_ms;
+            let shutdown = shutdown_token.clone();
+
+            AbortOnDrop(tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = shutdown.cancelled() => break,
+                        _ = tokio::time::sleep(Duration::from_millis(heartbeat_interval_ms)) => {
+                            let (role, term, commit_index) = {
+                                let s = state.read().await;
+                                (s.role, s.current_term, s.commit_index)
+                            };
+                            if role != RaftRole::Leader {
+                                continue;
+                            }
+
+                            let peers = heartbeat_peers.lock().await;
+                            for (peer_id, client) in peers.iter() {
+                                let mut client = client.clone();
+                                let peer_id = *peer_id;
+                                let peer_last_seen = peer_last_seen.clone();
+                                let state = state.clone();
+
+                                let req = AppendEntriesRequest {
+                                    term,
+                                    leader_id: node_id,
+                                    // prev_log_index = 0 skips the consistency check in
+                                    // handle_append_entries (guarded by `if req.prev_log_index > 0`).
+                                    // Empty entries means no log mutation; the follower still resets
+                                    // its election timer and advances commit_index.
+                                    prev_log_index: 0,
+                                    prev_log_term: 0,
+                                    entries: vec![],
+                                    leader_commit: commit_index,
+                                };
+
+                                tokio::spawn(async move {
+                                    match timeout(
+                                        Duration::from_millis(50),
+                                        client.append_entries(req),
+                                    )
+                                    .await
+                                    {
+                                        Ok(Ok(response)) => {
+                                            let resp = response.into_inner();
+                                            peer_last_seen
+                                                .write()
+                                                .await
+                                                .insert(peer_id, Instant::now());
+                                            if resp.term > term {
+                                                state.write().await.become_follower(resp.term);
+                                            }
+                                        }
+                                        Ok(Err(e)) => {
+                                            tracing::trace!(
+                                                peer_id,
+                                                error = %e,
+                                                "Heartbeat AppendEntries failed"
+                                            );
+                                        }
+                                        Err(_) => {
+                                            tracing::trace!(
+                                                peer_id,
+                                                "Heartbeat AppendEntries timed out"
+                                            );
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                    }
+                }
+            }))
+        };
 
         loop {
             let role = self.state.read().await.role;
@@ -294,9 +462,10 @@ impl RaftNode {
                     );
                 }
 
-                // Heartbeat interval (for leaders)
+                // Replication interval (for leaders); pure heartbeats are handled by
+                // the dedicated task spawned above.
                 _ = tokio::time::sleep(Duration::from_millis(self.config.heartbeat_interval_ms)), if role == RaftRole::Leader => {
-                    self.send_heartbeats().await;
+                    self.replicate_to_peers().await;
                 }
             }
         }
@@ -383,8 +552,9 @@ impl RaftNode {
         }
     }
 
-    /// Send heartbeats to all followers (leader only)
-    async fn send_heartbeats(&self) {
+    /// Replicate log entries and snapshots to all followers (leader only).
+    /// Pure keep-alive heartbeats are handled by the dedicated heartbeat task spawned in run().
+    async fn replicate_to_peers(&self) {
         let state = self.state.read().await;
         if state.role != RaftRole::Leader {
             return;
@@ -393,6 +563,7 @@ impl RaftNode {
         let term = state.current_term;
         let commit_index = state.commit_index;
         let next_index = state.next_index.clone();
+        let match_index = state.match_index.clone();
         let log_offset = state.log_offset;
         let snapshot = state.snapshot.clone();
 
@@ -480,6 +651,17 @@ impl RaftNode {
                 .filter(|e| e.index >= peer_next_index)
                 .map(log_entry_to_proto)
                 .collect();
+
+            // Skip only if we have confirmed this peer is fully caught up.
+            // If match_index is unknown or behind commit_index the peer may still need
+            // to be probed: a failure response drives next_index down until a snapshot
+            // or backfill is triggered. The dedicated heartbeat task covers pure keep-alives
+            // once a peer is confirmed current.
+            let confirmed_caught_up =
+                match_index.get(peer_id).copied().unwrap_or(0) >= commit_index;
+            if entries.is_empty() && confirmed_caught_up {
+                continue;
+            }
 
             let req = AppendEntriesRequest {
                 term,
@@ -663,8 +845,8 @@ impl RaftNode {
                 return Err(format!("Target node {} did not catch up within 2s", target));
             }
 
-            // Send heartbeats to push entries, then wait
-            self.send_heartbeats().await;
+            // Push entries to help target catch up, then wait
+            self.replicate_to_peers().await;
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
 
