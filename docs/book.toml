@@ -8,4 +8,4 @@ src = "src"
 command = "mdbook-mermaid"
 
 [output.html]
-additional-css = []
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
