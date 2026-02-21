@@ -1,70 +1,31 @@
 use axum::{
     body::Body,
     http::{Request, StatusCode},
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower::ServiceExt;
 
 use nomad_lite::config::NodeConfig;
-use nomad_lite::dashboard::DashboardState;
+use nomad_lite::dashboard::{
+    cluster_status_handler, index_handler, list_jobs_handler, submit_job_handler, DashboardState,
+};
 use nomad_lite::raft::RaftNode;
 use nomad_lite::scheduler::{Job, JobQueue, JobStatus};
 
-/// Create a test app with the dashboard routes
+/// Create a test app wired to the real dashboard handlers
 fn create_test_app(state: DashboardState) -> Router {
     Router::new()
+        .route("/", get(index_handler))
         .route("/api/cluster", get(cluster_status_handler))
         .route("/api/jobs", get(list_jobs_handler))
+        .route("/api/jobs", post(submit_job_handler))
         .with_state(state)
-}
-
-// Re-implement handlers for testing (since they're private in the module)
-async fn cluster_status_handler(
-    axum::extract::State(state): axum::extract::State<DashboardState>,
-) -> axum::Json<Value> {
-    let raft_state = state.raft_node.state.read().await;
-
-    axum::Json(json!({
-        "node_id": state.raft_node.id,
-        "role": raft_state.role.to_string(),
-        "current_term": raft_state.current_term,
-        "leader_id": if raft_state.role == nomad_lite::raft::RaftRole::Leader {
-            Some(state.raft_node.id)
-        } else {
-            raft_state.leader_id
-        },
-        "commit_index": raft_state.commit_index,
-        "last_applied": raft_state.last_applied,
-        "log_length": raft_state.last_log_index() as usize,
-    }))
-}
-
-async fn list_jobs_handler(
-    axum::extract::State(state): axum::extract::State<DashboardState>,
-) -> axum::Json<Value> {
-    let queue = state.job_queue.read().await;
-    let jobs: Vec<Value> = queue
-        .all_jobs()
-        .into_iter()
-        .map(|job| {
-            json!({
-                "id": job.id.to_string(),
-                "command": job.command.clone(),
-                "status": job.status.to_string(),
-                "assigned_worker": job.assigned_worker,
-                "output": job.output.clone(),
-                "error": job.error.clone(),
-            })
-        })
-        .collect();
-
-    axum::Json(json!(jobs))
 }
 
 /// Helper to create test state
@@ -82,6 +43,26 @@ fn create_test_state() -> (
     };
 
     (state, raft_rx)
+}
+
+#[tokio::test]
+async fn test_index_returns_html() {
+    let (state, _rx) = create_test_state();
+    let app = create_test_app(state);
+
+    let response = app
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(content_type.contains("text/html"));
 }
 
 #[tokio::test]
@@ -234,4 +215,58 @@ async fn test_cluster_status_returns_json() {
         .unwrap_or("");
 
     assert!(content_type.contains("application/json"));
+}
+
+#[tokio::test]
+async fn test_submit_job_rejected_when_draining() {
+    let (state, _rx) = create_test_state();
+    state.draining.store(true, Ordering::Relaxed);
+    let app = create_test_app(state);
+
+    let body = serde_json::to_string(&json!({ "command": "echo hi" })).unwrap();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["success"], false);
+    assert!(json["error"].as_str().unwrap().contains("draining"));
+}
+
+#[tokio::test]
+async fn test_submit_job_rejected_when_not_leader() {
+    let (state, _rx) = create_test_state();
+    // A freshly-created node starts as a follower, so is_leader() == false
+    let app = create_test_app(state);
+
+    let body = serde_json::to_string(&json!({ "command": "echo hi" })).unwrap();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["success"], false);
+    assert!(json["error"].as_str().unwrap().contains("Not the leader"));
 }

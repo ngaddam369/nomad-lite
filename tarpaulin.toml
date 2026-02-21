@@ -3,8 +3,11 @@ exclude-files = [
     "src/main.rs",
     "src/node.rs",
     "src/lib.rs",
+    "src/shutdown.rs",
     "src/grpc/server.rs",
     "src/grpc/mod.rs",
     "src/worker/mod.rs",
+    "src/worker/heartbeat.rs",
     "src/raft/mod.rs",
+    "src/scheduler/mod.rs",
 ]

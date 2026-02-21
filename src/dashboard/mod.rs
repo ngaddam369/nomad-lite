@@ -49,7 +49,7 @@ struct JobResponse {
 }
 
 #[derive(Deserialize)]
-struct SubmitJobRequest {
+pub struct SubmitJobRequest {
     command: String,
 }
 
@@ -98,11 +98,11 @@ pub async fn run_dashboard(
     }
 }
 
-async fn index_handler() -> Html<&'static str> {
+pub async fn index_handler() -> Html<&'static str> {
     Html(include_str!("index.html"))
 }
 
-async fn cluster_status_handler(State(state): State<DashboardState>) -> impl IntoResponse {
+pub async fn cluster_status_handler(State(state): State<DashboardState>) -> impl IntoResponse {
     let raft_state = state.raft_node.state.read().await;
 
     Json(ClusterStatusResponse {
@@ -120,7 +120,7 @@ async fn cluster_status_handler(State(state): State<DashboardState>) -> impl Int
     })
 }
 
-async fn list_jobs_handler(State(state): State<DashboardState>) -> impl IntoResponse {
+pub async fn list_jobs_handler(State(state): State<DashboardState>) -> impl IntoResponse {
     let queue = state.job_queue.read().await;
     let jobs: Vec<JobResponse> = queue
         .all_jobs()
@@ -140,7 +140,7 @@ async fn list_jobs_handler(State(state): State<DashboardState>) -> impl IntoResp
     Json(jobs)
 }
 
-async fn submit_job_handler(
+pub async fn submit_job_handler(
     State(state): State<DashboardState>,
     Json(payload): Json<SubmitJobRequest>,
 ) -> impl IntoResponse {
