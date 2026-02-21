@@ -91,8 +91,10 @@ graph TB
 
 - Every node runs all components (gRPC, Dashboard, Raft, Scheduler, Worker)
 - Only the leader's Scheduler Loop assigns jobs; followers just apply committed entries
-- Workers are notified immediately when jobs are assigned - no polling or RPC needed for job dispatch
-- Job output is stored only on the executing node (fetched via `InternalService` RPC when queried)
+- Job assignments travel through Raft (`AssignJob` command) so every node's queue reflects the same state
+- Workers send `WorkerHeartbeat` gRPC to the leader every 2 s to signal liveness; workers that miss heartbeats for more than 5 s are excluded from job assignment
+- Workers discover assigned jobs by querying the local job queue directly (no node-local in-memory map needed)
+- Job output is stored only on the executing node (fetched via `GetJobOutput` RPC when queried)
 
 ## Data Flow
 
@@ -138,34 +140,45 @@ sequenceDiagram
 
     Sched->>Queue1: 13. Check pending jobs
     Queue1-->>Sched: 14. Job found (PENDING)
-    Sched->>Sched: 15. Select least-loaded worker<br/>(Node 2)
-    Sched->>Queue1: 16. Assign job to worker 2<br/>Status: RUNNING
+    Sched->>Sched: 15. Select least-loaded live worker<br/>(Node 2, via WorkerHeartbeat liveness)
+    Sched->>Queue1: 16. Optimistic local assign<br/>Status: RUNNING (leader only)
+    Sched->>Raft1: 17. Propose AssignJob(job_id, worker=2)
+
+    par Replicate AssignJob to Followers
+        Raft1->>N2: 18a. AppendEntries (AssignJob)
+        Raft1->>N3: 18b. AppendEntries (AssignJob)
+    end
+
+    N2-->>Raft1: 19a. ACK
+    N3-->>Raft1: 19b. ACK
+
+    Note over N2,N3: Followers apply AssignJob<br/>Status: RUNNING on all nodes
 
     Note over Client,Docker: Job Execution Flow (Worker Loop - notified on assignment)
 
-    Worker->>Queue1: 17. Notified, check assigned jobs
-    Queue1-->>Worker: 18. Job assigned to me<br/>(RUNNING status)
+    Worker->>Queue1: 20. Notified, query jobs_assigned_to(node2)
+    Queue1-->>Worker: 21. Job assigned to me<br/>(RUNNING status)
 
-    Worker->>Docker: 19. docker run alpine:latest<br/>--network=none --read-only<br/>--memory=256m --cpus=0.5<br/>echo hello
+    Worker->>Docker: 22. docker run alpine:latest<br/>--network=none --read-only<br/>--memory=256m --cpus=0.5<br/>echo hello
 
-    Docker-->>Worker: 20. Output: "hello\n"<br/>Exit code: 0
+    Docker-->>Worker: 23. Output: "hello\n"<br/>Exit code: 0
 
-    Worker->>Queue1: 21. Update local job result<br/>Status: COMPLETED<br/>Output stored locally
+    Worker->>Queue1: 24. Update local job result<br/>Status: COMPLETED<br/>Output stored locally
 
-    Note over Worker,Raft1: If this node is leader, replicate status
+    Note over Worker,Raft1: Follower worker calls ForwardJobStatus → leader proposes to Raft
 
-    Worker->>Raft1: 22. Propose UpdateJobStatus
-    Raft1->>N2: 23. AppendEntries (status update)
-    Raft1->>N3: 23. AppendEntries (status update)
+    Worker->>Raft1: 25. ForwardJobStatus (job done, exit=0)
+    Raft1->>N2: 26. AppendEntries (UpdateJobStatus)
+    Raft1->>N3: 26. AppendEntries (UpdateJobStatus)
 
     Note over Client,Docker: Job Status Query Flow (Read Operation)
 
-    Client->>N1: 24. GetJobStatus(job_id)
-    N1->>Queue1: 25. Query job queue
-    Queue1-->>N1: 26. Job metadata<br/>(executed_by: Node 2)
-    N1->>N2: 27. GetJobOutput RPC<br/>(fetch from executor)
-    N2-->>N1: 28. Output: "hello"
-    N1-->>Client: 29. Response: COMPLETED<br/>Output: "hello"
+    Client->>N1: 27. GetJobStatus(job_id)
+    N1->>Queue1: 28. Query job queue
+    Queue1-->>N1: 29. Job metadata<br/>(executed_by: Node 2)
+    N1->>N2: 30. GetJobOutput RPC<br/>(fetch from executor)
+    N2-->>N1: 31. Output: "hello"
+    N1-->>Client: 32. Response: COMPLETED<br/>Output: "hello"
 
     Note over Client,Docker: Leader Election Flow (Failure Scenario)
 

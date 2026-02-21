@@ -183,6 +183,13 @@ fn proto_to_log_entry(proto: &ProtoLogEntry) -> Option<LogEntry> {
                     worker_id: register.worker_id,
                 }
             }
+            Some(crate::proto::command::CommandType::AssignJob(c)) => {
+                let job_id = Uuid::parse_str(&c.job_id).ok()?;
+                Command::AssignJob {
+                    job_id,
+                    worker_id: c.worker_id,
+                }
+            }
             Some(crate::proto::command::CommandType::BatchUpdateJobStatus(batch)) => {
                 let updates = batch
                     .updates
@@ -267,6 +274,12 @@ pub fn log_entry_to_proto(entry: &LogEntry) -> ProtoLogEntry {
         }
         Command::RegisterWorker { worker_id } => Some(ProtoCommand {
             command_type: Some(CommandType::RegisterWorker(RegisterWorkerCommand {
+                worker_id: *worker_id,
+            })),
+        }),
+        Command::AssignJob { job_id, worker_id } => Some(ProtoCommand {
+            command_type: Some(CommandType::AssignJob(crate::proto::AssignJobCommand {
+                job_id: job_id.to_string(),
                 worker_id: *worker_id,
             })),
         }),

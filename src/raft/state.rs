@@ -76,6 +76,8 @@ pub enum Command {
     BatchUpdateJobStatus { updates: Vec<JobStatusUpdate> },
     /// Register a worker
     RegisterWorker { worker_id: u64 },
+    /// Assign a job to a specific worker (replicated so all nodes update their queues)
+    AssignJob { job_id: Uuid, worker_id: u64 },
     /// No-op command (used for leader commit)
     Noop,
 }

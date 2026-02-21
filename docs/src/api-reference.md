@@ -83,6 +83,8 @@ curl http://localhost:8081/api/jobs
 | Method | Description |
 |--------|-------------|
 | `GetJobOutput(job_id)` | Fetch job output from the node that executed it |
+| `WorkerHeartbeat(node_id)` | Worker liveness signal sent every 2 s to the leader; auto-registers on first call; workers not seen for 5 s are excluded from job assignment |
+| `ForwardJobStatus(updates)` | Follower worker forwards completed job status to the leader for Raft replication |
 
 ### RaftService (node-to-node, consensus protocol)
 

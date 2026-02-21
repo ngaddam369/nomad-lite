@@ -92,7 +92,13 @@ message Command {
         UpdateJobStatusCommand update_job_status = 2;
         RegisterWorkerCommand register_worker = 3;
         BatchUpdateJobStatusCommand batch_update_job_status = 4;
+        AssignJobCommand assign_job = 5;
     }
+}
+
+message AssignJobCommand {
+    string job_id    = 1;
+    uint64 worker_id = 2;
 }
 
 message SubmitJobCommand {
@@ -276,6 +282,10 @@ message DrainNodeResponse {
 service InternalService {
     // Fetch job output from the node that executed it
     rpc GetJobOutput(GetJobOutputRequest) returns (GetJobOutputResponse);
+    // Worker heartbeat — keeps the leader's assigner aware of live workers
+    rpc WorkerHeartbeat(WorkerHeartbeatRequest) returns (WorkerHeartbeatResponse);
+    // Forward completed job status from a follower worker to the leader for Raft replication
+    rpc ForwardJobStatus(ForwardJobStatusRequest) returns (ForwardJobStatusResponse);
 }
 
 message GetJobOutputRequest {
@@ -288,6 +298,12 @@ message GetJobOutputResponse {
     string error = 3;
     bool found = 4;
 }
+
+message WorkerHeartbeatRequest  { uint64 node_id = 1; }
+message WorkerHeartbeatResponse {}
+
+message ForwardJobStatusRequest  { repeated UpdateJobStatusCommand updates = 1; }
+message ForwardJobStatusResponse {}
 
 enum JobStatus {
     JOB_STATUS_UNSPECIFIED = 0;

@@ -111,6 +111,11 @@ impl RaftNode {
         self.message_tx.clone()
     }
 
+    /// Get the peer configurations for this node
+    pub fn peer_configs(&self) -> &[crate::config::PeerConfig] {
+        &self.config.peers
+    }
+
     /// Subscribe to commit index updates. Returns a receiver that gets notified
     /// when new entries are committed.
     pub fn subscribe_commits(&self) -> watch::Receiver<u64> {

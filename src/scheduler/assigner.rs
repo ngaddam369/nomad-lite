@@ -33,7 +33,7 @@ impl WorkerState {
 /// Assigns jobs to workers
 #[derive(Debug, Default)]
 pub struct JobAssigner {
-    workers: HashMap<u64, WorkerState>,
+    pub workers: HashMap<u64, WorkerState>,
     worker_timeout_ms: u64,
 }
 

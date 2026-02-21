@@ -7,13 +7,15 @@ use uuid::Uuid;
 use nomad_lite::grpc::internal_service::InternalServiceImpl;
 use nomad_lite::proto::internal_service_server::InternalService;
 use nomad_lite::proto::GetJobOutputRequest;
+use nomad_lite::scheduler::assigner::JobAssigner;
 use nomad_lite::scheduler::job::{Job, JobStatus};
 use nomad_lite::scheduler::queue::JobQueue;
 
 /// Helper to create a test service with a job queue
 fn create_test_service(node_id: u64) -> (InternalServiceImpl, Arc<RwLock<JobQueue>>) {
     let queue = Arc::new(RwLock::new(JobQueue::new()));
-    let service = InternalServiceImpl::new(queue.clone(), node_id);
+    let assigner = Arc::new(RwLock::new(JobAssigner::new(5000)));
+    let service = InternalServiceImpl::new(queue.clone(), assigner, node_id, None);
     (service, queue)
 }
 

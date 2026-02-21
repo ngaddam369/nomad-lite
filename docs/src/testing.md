@@ -19,7 +19,8 @@ cargo test --test <name>  # Specific test suite
 | `chaos_tests` | Rapid leader churn, network flapping, cascading failures, full isolation recovery |
 | `tls_tests` | mTLS certificate loading, encrypted cluster communication |
 | `executor_tests` | Docker sandbox command execution |
-| `internal_service_tests` | Internal node-to-node API, job output fetching |
+| `internal_service_tests` | Internal node-to-node API, job output fetching, `ForwardJobStatus` to leader |
+| `distribution_tests` | Jobs spread across nodes (not just leader), `WorkerHeartbeat` RPC, dead-worker exclusion |
 | `dashboard_tests` | REST API endpoints |
 | `leadership_transfer_tests` | Voluntary leadership transfer, auto-select, non-leader rejection |
 | `drain_tests` | Node draining, job rejection during drain, leadership handoff |

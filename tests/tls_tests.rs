@@ -313,6 +313,7 @@ mod integration {
     use nomad_lite::config::{NodeConfig, PeerConfig, SandboxConfig, TlsConfig};
     use nomad_lite::grpc::GrpcServer;
     use nomad_lite::raft::RaftNode;
+    use nomad_lite::scheduler::assigner::JobAssigner;
     use nomad_lite::scheduler::JobQueue;
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
@@ -369,11 +370,13 @@ mod integration {
         let raft_node = Arc::new(raft_node);
         let job_queue = Arc::new(RwLock::new(JobQueue::new()));
 
+        let job_assigner = Arc::new(RwLock::new(JobAssigner::new(5000)));
         let server = GrpcServer::new(
             listen_addr,
             config,
             raft_node,
             job_queue,
+            job_assigner,
             Some(tls_identity),
             Arc::new(AtomicBool::new(false)),
         );
@@ -437,11 +440,14 @@ mod integration {
         let job_queue2 = Arc::new(RwLock::new(JobQueue::new()));
 
         // Start servers
+        let job_assigner1 = Arc::new(RwLock::new(JobAssigner::new(5000)));
+        let job_assigner2 = Arc::new(RwLock::new(JobAssigner::new(5000)));
         let server1 = GrpcServer::new(
             config1.listen_addr,
             config1,
             raft_node1.clone(),
             job_queue1,
+            job_assigner1,
             Some(tls_identity1),
             Arc::new(AtomicBool::new(false)),
         );
@@ -450,6 +456,7 @@ mod integration {
             config2,
             raft_node2.clone(),
             job_queue2,
+            job_assigner2,
             Some(tls_identity2),
             Arc::new(AtomicBool::new(false)),
         );
@@ -531,11 +538,14 @@ mod integration {
         let job_queue2 = Arc::new(RwLock::new(JobQueue::new()));
 
         // Start servers
+        let job_assigner1 = Arc::new(RwLock::new(JobAssigner::new(5000)));
+        let job_assigner2 = Arc::new(RwLock::new(JobAssigner::new(5000)));
         let server1 = GrpcServer::new(
             config1.listen_addr,
             config1,
             raft_node1.clone(),
             job_queue1,
+            job_assigner1,
             Some(tls_identity1),
             Arc::new(AtomicBool::new(false)),
         );
@@ -544,6 +554,7 @@ mod integration {
             config2,
             raft_node2.clone(),
             job_queue2,
+            job_assigner2,
             None,
             Arc::new(AtomicBool::new(false)),
         );

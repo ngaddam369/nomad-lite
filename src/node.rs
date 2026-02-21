@@ -166,6 +166,7 @@ impl Node {
             self.config.clone(),
             self.raft_node.clone(),
             self.job_queue.clone(),
+            self.job_assigner.clone(),
             self.tls_identity.clone(),
             self.draining.clone(),
         );
@@ -301,6 +302,19 @@ impl Node {
                                 job_assigner.write().await.register_worker(*worker_id);
                                 should_wake_assigner = true;
                             }
+                            Command::AssignJob { job_id, worker_id } => {
+                                let mut queue = job_queue.write().await;
+                                // Idempotent: only assign if still pending (guards duplicate commits)
+                                if queue.get_job(job_id).map(|j| j.status) == Some(JobStatus::Pending) {
+                                    queue.assign_job(job_id, *worker_id);
+                                    // Keep the assigner's load count fresh
+                                    job_assigner.write().await.worker_heartbeat(*worker_id);
+                                }
+                                // Wake the worker on this node if the job is for us
+                                if *worker_id == raft_node.id {
+                                    worker_notify.notify_one();
+                                }
+                            }
                             Command::Noop => {}
                         }
                     }
@@ -318,10 +332,44 @@ impl Node {
                         continue;
                     }
 
-                    let mut queue = job_queue.write().await;
-                    let mut assigner = job_assigner.write().await;
-                    while let Some((_job_id, _worker_id)) = assigner.assign_next_job(&mut queue) {
-                        worker_notify.notify_one();
+                    // Drain ALL pending jobs in one pass so a single notify burst
+                    // (e.g. 10 SubmitJob commits) results in 10 assignments, not 1.
+                    loop {
+                        let assignment = {
+                            let queue    = job_queue.read().await;
+                            let assigner = job_assigner.read().await;
+                            let job_id = queue.pending_jobs().first().map(|j| j.id);
+                            let worker_id = assigner.available_workers()
+                                .into_iter()
+                                .min_by_key(|&id| {
+                                    assigner.workers.get(&id)
+                                        .map(|w| w.running_jobs.len())
+                                        .unwrap_or(usize::MAX)
+                                });
+                            job_id.zip(worker_id)
+                        };
+
+                        if let Some((job_id, worker_id)) = assignment {
+                            // Optimistic local mark + update load counter for fair round-robin
+                            job_queue.write().await.assign_job(&job_id, worker_id);
+                            {
+                                let mut assigner = job_assigner.write().await;
+                                if let Some(w) = assigner.workers.get_mut(&worker_id) {
+                                    w.running_jobs.insert(job_id);
+                                }
+                            }
+                            // Replicate through Raft — all nodes apply AssignJob and the target wakes
+                            let (tx, _rx) = tokio::sync::oneshot::channel();
+                            let _ = raft_node
+                                .message_sender()
+                                .send(crate::raft::node::RaftMessage::AppendCommand {
+                                    command: Command::AssignJob { job_id, worker_id },
+                                    response_tx: tx,
+                                })
+                                .await;
+                        } else {
+                            break;
+                        }
                     }
                 }
             }
@@ -434,8 +482,8 @@ impl Node {
     ///
     /// Each node acts as both a potential leader and a worker. This loop:
     ///
-    /// 1. **Registers** this node as a worker on startup
-    /// 2. **Sends heartbeats** every 2s to stay registered
+    /// 1. **Registers** this node as a worker on startup (locally + via Raft)
+    /// 2. **Sends heartbeats** every 2s — directly to leader's InternalService
     /// 3. **Wakes immediately** when jobs are assigned via `worker_notify`
     /// 4. **Executes jobs** via shell and captures output
     /// 5. **Updates local state** with job results
@@ -449,15 +497,30 @@ impl Node {
         worker_notify: Arc<Notify>,
         shutdown_token: CancellationToken,
     ) {
+        use crate::proto::internal_service_client::InternalServiceClient;
+        use crate::proto::WorkerHeartbeatRequest;
+
         let executor = JobExecutor::new(sandbox_config);
         let mut heartbeat_interval =
             tokio::time::interval(tokio::time::Duration::from_millis(2000));
 
-        // Register self as worker
+        // Register locally for immediate self-awareness
+        job_assigner.write().await.register_worker(node_id);
+        // Register via Raft so the leader's assigner learns about this worker
         {
-            let mut assigner = job_assigner.write().await;
-            assigner.register_worker(node_id);
+            let (tx, _rx) = tokio::sync::oneshot::channel();
+            let _ = raft_node
+                .message_sender()
+                .send(crate::raft::node::RaftMessage::AppendCommand {
+                    command: Command::RegisterWorker { worker_id: node_id },
+                    response_tx: tx,
+                })
+                .await;
         }
+
+        // Cached connection to the current leader for heartbeats
+        let mut cached_leader: Option<(u64, InternalServiceClient<tonic::transport::Channel>)> =
+            None;
 
         loop {
             tokio::select! {
@@ -469,36 +532,35 @@ impl Node {
                 _ = heartbeat_interval.tick() => {}
             }
 
-            // Send heartbeat
-            {
-                let mut assigner = job_assigner.write().await;
-                assigner.worker_heartbeat(node_id);
+            // Send heartbeat to whoever is currently the leader
+            if raft_node.is_leader().await {
+                // Self is the leader: update local assigner directly
+                job_assigner.write().await.worker_heartbeat(node_id);
+            } else if let Some(leader_id) = raft_node.get_leader_id().await {
+                // Reconnect if leader changed
+                if cached_leader.as_ref().map(|(id, _)| *id) != Some(leader_id) {
+                    let addr = raft_node
+                        .peer_configs()
+                        .iter()
+                        .find(|p| p.node_id == leader_id)
+                        .map(|p| format!("http://{}", p.addr));
+                    if let Some(addr) = addr {
+                        if let Ok(client) = InternalServiceClient::connect(addr).await {
+                            cached_leader = Some((leader_id, client));
+                        }
+                    }
+                }
+                if let Some((_, ref mut client)) = cached_leader {
+                    let _ = client
+                        .worker_heartbeat(WorkerHeartbeatRequest { node_id })
+                        .await;
+                }
             }
+            // If leader unknown, skip heartbeat tick — worker stays alive for up to 5 s
 
-            // Check for jobs assigned to this worker
-            let jobs_to_run: Vec<(uuid::Uuid, String)> = {
-                let queue = job_queue.read().await;
-                let assigner = job_assigner.read().await;
-                assigner
-                    .all_workers()
-                    .iter()
-                    .find(|w| w.id == node_id)
-                    .map(|w| {
-                        w.running_jobs
-                            .iter()
-                            .filter_map(|job_id| {
-                                queue.get_job(job_id).and_then(|job| {
-                                    if job.status == JobStatus::Running {
-                                        Some((*job_id, job.command.clone()))
-                                    } else {
-                                        None
-                                    }
-                                })
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            };
+            // Check for jobs assigned to this worker via the queue (not assigner)
+            let jobs_to_run: Vec<(uuid::Uuid, String)> =
+                { job_queue.read().await.jobs_assigned_to(node_id) };
 
             // Execute jobs and collect status updates for batching
             let mut pending_updates: Vec<JobStatusUpdate> = Vec::new();
@@ -538,34 +600,65 @@ impl Node {
             }
 
             // Flush buffered updates as a single Raft command
-            if !pending_updates.is_empty() && raft_node.is_leader().await {
-                let command = if pending_updates.len() == 1 {
-                    let u = pending_updates.remove(0);
-                    Command::UpdateJobStatus {
-                        job_id: u.job_id,
-                        status: u.status,
-                        executed_by: u.executed_by,
-                        exit_code: u.exit_code,
-                        completed_at: u.completed_at,
+            if !pending_updates.is_empty() {
+                if raft_node.is_leader().await {
+                    let command = if pending_updates.len() == 1 {
+                        let u = pending_updates.remove(0);
+                        Command::UpdateJobStatus {
+                            job_id: u.job_id,
+                            status: u.status,
+                            executed_by: u.executed_by,
+                            exit_code: u.exit_code,
+                            completed_at: u.completed_at,
+                        }
+                    } else {
+                        Command::BatchUpdateJobStatus {
+                            updates: pending_updates,
+                        }
+                    };
+                    let (tx, _rx) = tokio::sync::oneshot::channel();
+                    if let Err(e) = raft_node
+                        .message_sender()
+                        .send(crate::raft::node::RaftMessage::AppendCommand {
+                            command,
+                            response_tx: tx,
+                        })
+                        .await
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            "Failed to send job status update(s) to Raft"
+                        );
                     }
-                } else {
-                    Command::BatchUpdateJobStatus {
-                        updates: pending_updates,
+                } else if let Some((_, ref mut leader_client)) = cached_leader {
+                    // Follower: forward status updates to the leader for Raft replication
+                    use crate::proto::{ForwardJobStatusRequest, JobStatus as ProtoJobStatus};
+                    let proto_updates = pending_updates
+                        .iter()
+                        .map(|u| crate::proto::UpdateJobStatusCommand {
+                            job_id: u.job_id.to_string(),
+                            status: match u.status {
+                                JobStatus::Pending => ProtoJobStatus::Pending as i32,
+                                JobStatus::Running => ProtoJobStatus::Running as i32,
+                                JobStatus::Completed => ProtoJobStatus::Completed as i32,
+                                JobStatus::Failed => ProtoJobStatus::Failed as i32,
+                            },
+                            executed_by: u.executed_by,
+                            exit_code: u.exit_code,
+                            completed_at_ms: u.completed_at.map(|dt| dt.timestamp_millis()),
+                        })
+                        .collect();
+                    if let Err(e) = leader_client
+                        .forward_job_status(ForwardJobStatusRequest {
+                            updates: proto_updates,
+                        })
+                        .await
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            "Failed to forward job status to leader"
+                        );
                     }
-                };
-                let (tx, _rx) = tokio::sync::oneshot::channel();
-                if let Err(e) = raft_node
-                    .message_sender()
-                    .send(crate::raft::node::RaftMessage::AppendCommand {
-                        command,
-                        response_tx: tx,
-                    })
-                    .await
-                {
-                    tracing::warn!(
-                        error = %e,
-                        "Failed to send job status update(s) to Raft"
-                    );
                 }
             }
         }

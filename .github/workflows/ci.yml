@@ -66,6 +66,9 @@ jobs:
       - name: Run backpressure tests
         run: cargo test --test backpressure_tests --verbose -- --test-threads=1
 
+      - name: Run distribution tests
+        run: cargo test --test distribution_tests --verbose -- --test-threads=1
+
       - name: Verify openssl is available (required for cert generation)
         run: openssl version
 

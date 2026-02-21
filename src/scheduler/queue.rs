@@ -164,6 +164,15 @@ impl JobQueue {
             .collect()
     }
 
+    /// Returns (job_id, command) pairs for all Running jobs assigned to `worker_id`.
+    pub fn jobs_assigned_to(&self, worker_id: u64) -> Vec<(Uuid, String)> {
+        self.jobs
+            .values()
+            .filter(|j| j.assigned_worker == Some(worker_id) && j.status == JobStatus::Running)
+            .map(|j| (j.id, j.command.clone()))
+            .collect()
+    }
+
     /// Remove completed and failed jobs from the queue. Returns the number of jobs removed.
     pub fn cleanup_finished_jobs(&mut self) -> usize {
         let before = self.jobs.len();

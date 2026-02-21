@@ -13,6 +13,7 @@ use crate::proto::internal_service_server::InternalServiceServer;
 use crate::proto::raft_service_server::RaftServiceServer;
 use crate::proto::scheduler_service_server::SchedulerServiceServer;
 use crate::raft::RaftNode;
+use crate::scheduler::assigner::JobAssigner;
 use crate::scheduler::JobQueue;
 use crate::tls::TlsIdentity;
 
@@ -21,6 +22,7 @@ pub struct GrpcServer {
     config: NodeConfig,
     raft_node: Arc<RaftNode>,
     job_queue: Arc<RwLock<JobQueue>>,
+    job_assigner: Arc<RwLock<JobAssigner>>,
     tls_identity: Option<TlsIdentity>,
     draining: Arc<AtomicBool>,
 }
@@ -31,6 +33,7 @@ impl GrpcServer {
         config: NodeConfig,
         raft_node: Arc<RaftNode>,
         job_queue: Arc<RwLock<JobQueue>>,
+        job_assigner: Arc<RwLock<JobAssigner>>,
         tls_identity: Option<TlsIdentity>,
         draining: Arc<AtomicBool>,
     ) -> Self {
@@ -39,6 +42,7 @@ impl GrpcServer {
             config,
             raft_node,
             job_queue,
+            job_assigner,
             tls_identity,
             draining,
         }
@@ -56,8 +60,12 @@ impl GrpcServer {
             self.tls_identity.clone(),
             self.draining.clone(),
         );
-        let internal_service =
-            InternalServiceImpl::new(self.job_queue.clone(), self.config.node_id);
+        let internal_service = InternalServiceImpl::new(
+            self.job_queue.clone(),
+            self.job_assigner.clone(),
+            self.config.node_id,
+            Some(self.raft_node.clone()),
+        );
 
         // Build server with optional TLS
         let mut builder = Server::builder();

@@ -18,6 +18,7 @@ use nomad_lite::grpc::GrpcServer;
 use nomad_lite::raft::node::RaftMessage;
 use nomad_lite::raft::state::{Command, RaftRole, Snapshot, SnapshotJob};
 use nomad_lite::raft::RaftNode;
+use nomad_lite::scheduler::assigner::JobAssigner;
 use nomad_lite::scheduler::{Job, JobQueue};
 use tokio_util::sync::CancellationToken;
 
@@ -54,6 +55,7 @@ pub struct TestNode {
     pub port: u16,
     pub raft_node: Arc<RaftNode>,
     pub job_queue: Arc<RwLock<JobQueue>>,
+    pub job_assigner: Arc<RwLock<JobAssigner>>,
     raft_handle: JoinHandle<()>,
     grpc_handle: JoinHandle<()>,
     scheduler_handle: JoinHandle<()>,
@@ -156,20 +158,23 @@ impl TestCluster {
             raft_node_clone.run(raft_rx, CancellationToken::new()).await;
         });
 
-        // Spawn scheduler loop (applies committed entries to job queue)
-        let scheduler_raft = raft_node.clone();
-        let scheduler_queue = job_queue.clone();
-        let scheduler_handle = tokio::spawn(async move {
-            Self::scheduler_loop(scheduler_raft, scheduler_queue).await;
-        });
-
         // Spawn gRPC server
         let draining = Arc::new(AtomicBool::new(false));
+        let job_assigner = Arc::new(RwLock::new(JobAssigner::new(5000)));
+
+        // Spawn scheduler loop (applies committed entries to job queue, assigns jobs on leader)
+        let scheduler_raft = raft_node.clone();
+        let scheduler_queue = job_queue.clone();
+        let scheduler_assigner = job_assigner.clone();
+        let scheduler_handle = tokio::spawn(async move {
+            Self::scheduler_loop(scheduler_raft, scheduler_queue, scheduler_assigner).await;
+        });
         let grpc_server = GrpcServer::new(
             listen_addr,
             config,
             raft_node.clone(),
             job_queue.clone(),
+            job_assigner.clone(),
             None,
             draining.clone(),
         );
@@ -185,6 +190,7 @@ impl TestCluster {
             port,
             raft_node,
             job_queue,
+            job_assigner,
             raft_handle,
             grpc_handle,
             scheduler_handle,
@@ -192,8 +198,12 @@ impl TestCluster {
     }
 
     /// Simplified scheduler loop that applies committed entries to job queue,
-    /// triggers log compaction, and handles snapshot installation.
-    async fn scheduler_loop(raft_node: Arc<RaftNode>, job_queue: Arc<RwLock<JobQueue>>) {
+    /// triggers log compaction, handles snapshot installation, and assigns jobs on the leader.
+    async fn scheduler_loop(
+        raft_node: Arc<RaftNode>,
+        job_queue: Arc<RwLock<JobQueue>>,
+        job_assigner: Arc<RwLock<JobAssigner>>,
+    ) {
         let mut commit_rx = raft_node.subscribe_commits();
 
         loop {
@@ -212,6 +222,7 @@ impl TestCluster {
             }
 
             // Apply committed entries
+            let mut should_assign = false;
             let entries = raft_node.get_committed_entries().await;
             for entry in entries {
                 match entry.command {
@@ -224,6 +235,7 @@ impl TestCluster {
                         if queue.get_job(&job_id).is_none() {
                             queue.add_job(Job::with_id(job_id, command, created_at));
                         }
+                        should_assign = true;
                     }
                     Command::UpdateJobStatus {
                         job_id,
@@ -253,7 +265,59 @@ impl TestCluster {
                             );
                         }
                     }
-                    Command::RegisterWorker { .. } | Command::Noop => {}
+                    Command::AssignJob { job_id, worker_id } => {
+                        let mut queue = job_queue.write().await;
+                        if queue.get_job(&job_id).map(|j| j.status)
+                            == Some(nomad_lite::scheduler::JobStatus::Pending)
+                        {
+                            queue.assign_job(&job_id, worker_id);
+                        }
+                    }
+                    Command::RegisterWorker { worker_id } => {
+                        job_assigner.write().await.register_worker(worker_id);
+                        should_assign = true;
+                    }
+                    Command::Noop => {}
+                }
+            }
+
+            // Leader: assign ALL pending jobs through Raft
+            if should_assign && raft_node.is_leader().await {
+                loop {
+                    let assignment = {
+                        let queue = job_queue.read().await;
+                        let assigner = job_assigner.read().await;
+                        let job_id = queue.pending_jobs().first().map(|j| j.id);
+                        let worker_id =
+                            assigner.available_workers().into_iter().min_by_key(|&id| {
+                                assigner
+                                    .workers
+                                    .get(&id)
+                                    .map(|w| w.running_jobs.len())
+                                    .unwrap_or(usize::MAX)
+                            });
+                        job_id.zip(worker_id)
+                    };
+                    if let Some((job_id, worker_id)) = assignment {
+                        // Optimistic local assign + update load counter for fair distribution
+                        job_queue.write().await.assign_job(&job_id, worker_id);
+                        {
+                            let mut assigner = job_assigner.write().await;
+                            if let Some(w) = assigner.workers.get_mut(&worker_id) {
+                                w.running_jobs.insert(job_id);
+                            }
+                        }
+                        let (tx, _rx) = tokio::sync::oneshot::channel();
+                        let _ = raft_node
+                            .message_sender()
+                            .send(RaftMessage::AppendCommand {
+                                command: Command::AssignJob { job_id, worker_id },
+                                response_tx: tx,
+                            })
+                            .await;
+                    } else {
+                        break;
+                    }
                 }
             }
 

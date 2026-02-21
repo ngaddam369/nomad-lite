@@ -999,6 +999,10 @@ fn format_command(command: &Option<nomad_lite::proto::Command>) -> (String, Stri
                 "BatchUpdateJobStatus".to_string(),
                 format!("{} updates", batch.updates.len()),
             ),
+            Some(CommandType::AssignJob(assign)) => (
+                "AssignJob".to_string(),
+                format!("job_id={}, worker_id={}", assign.job_id, assign.worker_id),
+            ),
             None => ("Noop".to_string(), String::new()),
         },
         None => ("Noop".to_string(), String::new()),
