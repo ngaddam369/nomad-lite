@@ -63,6 +63,9 @@ jobs:
       - name: Run compaction tests
         run: cargo test --test compaction_tests --verbose -- --test-threads=1
 
+      - name: Run backpressure tests
+        run: cargo test --test backpressure_tests --verbose -- --test-threads=1
+
       - name: Verify openssl is available (required for cert generation)
         run: openssl version
 

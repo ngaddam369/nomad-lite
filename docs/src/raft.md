@@ -12,6 +12,10 @@
 3. Majority acknowledgment → committed
 4. Applied to state machine
 
+### Proposal backpressure
+
+The leader's proposal channel holds at most **256 pending commands**. If the channel is full, `SubmitJob` returns `RESOURCE_EXHAUSTED` immediately — the caller should retry with exponential backoff. Additionally, if the Raft loop accepts the command but quorum is lost before the entry commits, `SubmitJob` returns `DEADLINE_EXCEEDED` after **5 seconds**. Both guarantees ensure clients always get a bounded response rather than hanging indefinitely.
+
 ## Log Compaction
 
 When the in-memory log exceeds 1000 entries, the committed prefix is replaced with a snapshot of the current state (job queue + worker registrations). This bounds memory usage regardless of throughput. Followers that fall too far behind receive the snapshot via `InstallSnapshot` RPC instead of replaying individual entries.

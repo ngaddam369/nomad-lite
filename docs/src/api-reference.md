@@ -67,6 +67,17 @@ curl http://localhost:8081/api/jobs
 | `TransferLeadership(target)` | Transfer leadership | Yes |
 | `DrainNode()` | Drain node for maintenance | No |
 
+#### SubmitJob error codes
+
+| gRPC status | Meaning | Client action |
+|---|---|---|
+| `OK` | Job accepted and committed | — |
+| `FAILED_PRECONDITION` | Node is not the leader | Redirect to the node ID in the message |
+| `RESOURCE_EXHAUSTED` | Leader proposal queue is full (>256 pending) | Retry with exponential backoff |
+| `DEADLINE_EXCEEDED` | Raft did not commit the entry within 5 seconds | Retry; may indicate a degraded cluster |
+| `UNAVAILABLE` | Node is draining, or the Raft loop has stopped | Retry on a different node |
+| `INVALID_ARGUMENT` | Empty command string | Fix the request |
+
 ### InternalService (node-to-node, not client-facing)
 
 | Method | Description |

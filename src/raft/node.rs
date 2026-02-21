@@ -83,7 +83,7 @@ impl RaftNode {
         config: NodeConfig,
         tls_identity: Option<TlsIdentity>,
     ) -> (Self, mpsc::Receiver<RaftMessage>) {
-        let (message_tx, message_rx) = mpsc::channel(100);
+        let (message_tx, message_rx) = mpsc::channel(256);
         let (commit_notify_tx, commit_notify_rx) = watch::channel(0);
 
         let node = Self {

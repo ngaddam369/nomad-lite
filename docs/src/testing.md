@@ -24,3 +24,4 @@ cargo test --test <name>  # Specific test suite
 | `leadership_transfer_tests` | Voluntary leadership transfer, auto-select, non-leader rejection |
 | `drain_tests` | Node draining, job rejection during drain, leadership handoff |
 | `compaction_tests` | Log compaction trigger, snapshot transfer to slow followers, state consistency |
+| `backpressure_tests` | Full proposal channel returns `RESOURCE_EXHAUSTED` immediately; stalled Raft loop returns `DEADLINE_EXCEEDED` after 5 s |

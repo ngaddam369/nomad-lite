@@ -207,21 +207,28 @@ impl SchedulerService for ClientService {
         };
 
         let (tx, rx) = tokio::sync::oneshot::channel();
-        if self
-            .raft_node
-            .message_sender()
-            .send(crate::raft::node::RaftMessage::AppendCommand {
+        match self.raft_node.message_sender().try_send(
+            crate::raft::node::RaftMessage::AppendCommand {
                 command,
                 response_tx: tx,
-            })
-            .await
-            .is_err()
-        {
-            return Err(Status::internal("Failed to send command to Raft"));
+            },
+        ) {
+            Ok(()) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                return Err(Status::resource_exhausted(
+                    "Server is overloaded; retry with backoff",
+                ));
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                return Err(Status::unavailable("Raft loop is not running"));
+            }
         }
 
-        match rx.await {
-            Ok(Ok(_index)) => {
+        match tokio::time::timeout(tokio::time::Duration::from_secs(5), rx).await {
+            Err(_timeout) => Err(Status::deadline_exceeded(
+                "Raft did not commit the entry in time",
+            )),
+            Ok(Ok(Ok(_index))) => {
                 let created_at_ms = job.created_at.timestamp_millis();
                 // Add job to queue
                 if !self.job_queue.write().await.add_job(job) {
@@ -234,8 +241,8 @@ impl SchedulerService for ClientService {
                     created_at_ms,
                 }))
             }
-            Ok(Err(e)) => Err(Status::internal(format!("Raft error: {}", e))),
-            Err(_) => Err(Status::internal("Failed to receive Raft response")),
+            Ok(Ok(Err(e))) => Err(Status::internal(format!("Raft error: {}", e))),
+            Ok(Err(_)) => Err(Status::unavailable("Raft loop is not running")),
         }
     }
 
