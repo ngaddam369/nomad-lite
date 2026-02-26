@@ -20,3 +20,4 @@ Jobs run in isolated containers with:
 | Privileges | `--security-opt=no-new-privileges` |
 | Memory | `--memory=256m` |
 | CPU | `--cpus=0.5` |
+| Wall-clock timeout | 30s (hardcoded; jobs exceeding this are killed and marked Failed) |

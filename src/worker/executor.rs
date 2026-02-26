@@ -1,4 +1,5 @@
 use std::process::Stdio;
+use std::time::Duration;
 use tokio::process::Command;
 use uuid::Uuid;
 
@@ -32,11 +33,22 @@ impl JobExecutor {
         Self { config }
     }
 
-    /// Execute a job command in a sandboxed Docker container
+    /// Execute a job command in a sandboxed Docker container.
+    ///
+    /// If `SandboxConfig::timeout_secs` is set, the container is force-removed
+    /// and the job is marked `Failed` with a "Timed out" error when the limit
+    /// is exceeded.
     pub async fn execute(&self, job_id: Uuid, command: &str) -> ExecutionResult {
         tracing::info!(job_id = %job_id, command, image = %self.config.image, "Executing job");
 
+        // Unique container name lets us force-remove it on timeout.
+        let container_name = format!("nomad-{}", job_id.as_simple());
+
         let mut args = vec!["run".to_string(), "--rm".to_string()];
+
+        // Named container for cleanup on timeout
+        args.push("--name".to_string());
+        args.push(container_name.clone());
 
         // Network isolation
         if self.config.network_disabled {
@@ -66,14 +78,54 @@ impl JobExecutor {
         args.push("-c".to_string());
         args.push(command.to_string());
 
-        let result = Command::new("docker")
+        let child = Command::new("docker")
             .args(&args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .output()
-            .await;
+            .kill_on_drop(true)
+            .spawn();
 
-        Self::process_output(job_id, result)
+        let child = match child {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(job_id = %job_id, error = %e, "Failed to spawn docker");
+                return ExecutionResult {
+                    job_id,
+                    status: JobStatus::Failed,
+                    exit_code: None,
+                    output: None,
+                    error: Some(e.to_string()),
+                };
+            }
+        };
+
+        let timeout_secs = self.config.timeout_secs;
+        match tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait_with_output())
+            .await
+        {
+            Ok(result) => Self::process_output(job_id, result),
+            Err(_elapsed) => {
+                tracing::warn!(
+                    job_id = %job_id,
+                    timeout_secs,
+                    "Job timed out, force-removing container"
+                );
+                // kill_on_drop fires when child is dropped above; also
+                // force-remove the named container to handle the case where
+                // the docker CLI detaches from a still-running container.
+                let _ = Command::new("docker")
+                    .args(["rm", "-f", &container_name])
+                    .output()
+                    .await;
+                ExecutionResult {
+                    job_id,
+                    status: JobStatus::Failed,
+                    exit_code: None,
+                    output: None,
+                    error: Some(format!("Timed out after {}s", timeout_secs)),
+                }
+            }
+        }
     }
 
     fn process_output(

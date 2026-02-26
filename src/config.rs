@@ -14,6 +14,9 @@ pub struct SandboxConfig {
     pub memory_limit: Option<String>,
     /// CPU limit (e.g., "0.5" for half a CPU)
     pub cpu_limit: Option<String>,
+    /// Maximum wall-clock seconds a job may run before it is killed and
+    /// marked Failed.
+    pub timeout_secs: u64,
 }
 
 impl Default for SandboxConfig {
@@ -23,6 +26,7 @@ impl Default for SandboxConfig {
             network_disabled: true,
             memory_limit: Some("256m".to_string()),
             cpu_limit: Some("0.5".to_string()),
+            timeout_secs: 30,
         }
     }
 }

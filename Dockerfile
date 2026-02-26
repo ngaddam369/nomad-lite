@@ -1,7 +1,7 @@
-FROM rust:1.83-slim-bookworm AS builder
+FROM rust:1.85-slim-bookworm AS builder
 
 # Install protobuf compiler
-RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y protobuf-compiler clang g++ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
