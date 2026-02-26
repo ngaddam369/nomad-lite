@@ -19,6 +19,9 @@ use crate::worker::JobExecutor;
 /// Minimum log length before compaction is triggered
 const LOG_COMPACTION_THRESHOLD: usize = 1000;
 
+/// How often to evict completed/failed jobs from the in-memory queue
+const QUEUE_CLEANUP_INTERVAL_SECS: u64 = 300;
+
 /// Main node that orchestrates all components
 pub struct Node {
     pub config: NodeConfig,
@@ -234,11 +237,26 @@ impl Node {
     ) {
         let mut commit_rx = raft_node.subscribe_commits();
 
+        // First cleanup fires after one full interval, not immediately.
+        let cleanup_start = tokio::time::Instant::now()
+            + tokio::time::Duration::from_secs(QUEUE_CLEANUP_INTERVAL_SECS);
+        let mut cleanup_interval = tokio::time::interval_at(
+            cleanup_start,
+            tokio::time::Duration::from_secs(QUEUE_CLEANUP_INTERVAL_SECS),
+        );
+
         loop {
             tokio::select! {
                 _ = shutdown_token.cancelled() => {
                     tracing::info!("Scheduler loop shutting down");
                     break;
+                }
+
+                _ = cleanup_interval.tick() => {
+                    let removed = job_queue.write().await.cleanup_finished_jobs();
+                    if removed > 0 {
+                        tracing::info!(removed, "Evicted finished jobs from queue");
+                    }
                 }
 
                 // Wait for commit notifications
