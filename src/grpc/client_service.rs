@@ -195,6 +195,12 @@ impl SchedulerService for ClientService {
             return Err(Status::failed_precondition(message));
         }
 
+        // Reject before touching Raft — avoids orphaned committed log entries
+        // when the queue is already at capacity.
+        if self.job_queue.read().await.is_full() {
+            return Err(Status::resource_exhausted("Job queue is at capacity"));
+        }
+
         // Create a new job
         let job = Job::new(req.command.clone());
         let job_id = job.id;

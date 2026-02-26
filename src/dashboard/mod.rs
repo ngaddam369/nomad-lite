@@ -166,6 +166,19 @@ pub async fn submit_job_handler(
         );
     }
 
+    // Reject before touching Raft — avoids orphaned committed log entries
+    // when the queue is already at capacity.
+    if state.job_queue.read().await.is_full() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(SubmitJobResponse {
+                success: false,
+                job_id: None,
+                error: Some("Job queue is at capacity".to_string()),
+            }),
+        );
+    }
+
     let job = Job::new(payload.command.clone());
     let job_id = job.id;
 
