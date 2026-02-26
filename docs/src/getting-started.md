@@ -132,6 +132,26 @@ nomad-lite server --node-id 3 --port 50053 --dashboard-port 8083 \
   --peers "1:127.0.0.1:50051,2:127.0.0.1:50052"
 ```
 
+**With state persistence (survives restarts):**
+
+```bash
+# Add --data-dir to each node; state is preserved across restarts
+nomad-lite server --node-id 1 --port 50051 --dashboard-port 8081 \
+  --peers "2:127.0.0.1:50052,3:127.0.0.1:50053" \
+  --data-dir /var/lib/nomad-lite/node1
+
+nomad-lite server --node-id 2 --port 50052 --dashboard-port 8082 \
+  --peers "1:127.0.0.1:50051,3:127.0.0.1:50053" \
+  --data-dir /var/lib/nomad-lite/node2
+
+nomad-lite server --node-id 3 --port 50053 --dashboard-port 8083 \
+  --peers "1:127.0.0.1:50051,2:127.0.0.1:50052" \
+  --data-dir /var/lib/nomad-lite/node3
+```
+
+Each node stores its Raft log, term, voted-for, and job snapshot in a local RocksDB instance.
+Omit `--data-dir` to run with in-memory state (useful for development and testing).
+
 **With mTLS:**
 
 ```bash

@@ -14,6 +14,7 @@ use crate::raft::rpc::{
     snapshot_job_to_proto,
 };
 use crate::raft::state::{Command, RaftRole, RaftState, Snapshot};
+use crate::raft::storage::{PersistedState, RaftStorage};
 use crate::raft::timer::random_election_timeout;
 use crate::tls::TlsIdentity;
 
@@ -76,19 +77,54 @@ pub struct RaftNode {
     /// state machines from this snapshot. Uses a Mutex<Option<Snapshot>> as a
     /// simple flag/channel.
     pending_snapshot: Arc<tokio::sync::Mutex<Option<Snapshot>>>,
+    /// Optional RocksDB-backed persistence layer. `None` = in-memory only.
+    pub(crate) storage: Option<Arc<RaftStorage>>,
 }
 
 impl RaftNode {
+    /// Create a new in-memory Raft node (no persistence). All existing tests use this.
     pub fn new(
         config: NodeConfig,
         tls_identity: Option<TlsIdentity>,
     ) -> (Self, mpsc::Receiver<RaftMessage>) {
+        Self::new_with_storage(config, tls_identity, None, None)
+    }
+
+    /// Create a Raft node with optional storage and optional restored state.
+    ///
+    /// - `storage`: RocksDB persistence layer; `None` = in-memory only.
+    /// - `persisted`: State recovered from a previous run; `None` = fresh start.
+    pub fn new_with_storage(
+        config: NodeConfig,
+        tls_identity: Option<TlsIdentity>,
+        storage: Option<Arc<RaftStorage>>,
+        persisted: Option<PersistedState>,
+    ) -> (Self, mpsc::Receiver<RaftMessage>) {
         let (message_tx, message_rx) = mpsc::channel(256);
         let (commit_notify_tx, commit_notify_rx) = watch::channel(0);
 
+        // Restore durable state if available; otherwise start fresh.
+        let raft_state = if let Some(p) = persisted {
+            let mut s = RaftState::new();
+            s.current_term = p.current_term;
+            s.voted_for = p.voted_for;
+            s.log_offset = p.log_offset;
+            s.log = p.log;
+            s.snapshot = p.snapshot;
+            // Align commit/apply pointers with the snapshot so the scheduler
+            // loop does not attempt to re-apply already-snapshotted entries.
+            if let Some(ref snap) = s.snapshot {
+                s.commit_index = snap.last_included_index;
+                s.last_applied = snap.last_included_index;
+            }
+            s
+        } else {
+            RaftState::new()
+        };
+
         let node = Self {
             id: config.node_id,
-            state: Arc::new(RwLock::new(RaftState::new())),
+            state: Arc::new(RwLock::new(raft_state)),
             config,
             peers: Arc::new(Mutex::new(HashMap::new())),
             disconnected_peers: Arc::new(Mutex::new(HashMap::new())),
@@ -101,9 +137,23 @@ impl RaftNode {
             peer_last_seen: Arc::new(RwLock::new(HashMap::new())),
             tls_identity,
             pending_snapshot: Arc::new(tokio::sync::Mutex::new(None)),
+            storage,
         };
 
         (node, message_rx)
+    }
+
+    /// Queue the restored snapshot (if any) for the scheduler loop to process
+    /// on startup. Must be called after `new_with_storage` when `persisted` had
+    /// a snapshot; safe to call unconditionally (no-op when there is no snapshot).
+    pub async fn restore_snapshot_for_scheduler(&self) {
+        let state = self.state.read().await;
+        if let Some(ref snapshot) = state.snapshot {
+            let mut pending = self.pending_snapshot.lock().await;
+            *pending = Some(snapshot.clone());
+            // Wake the scheduler loop so it picks up the snapshot immediately.
+            let _ = self.commit_notify_tx.send(state.commit_index);
+        }
     }
 
     /// Get the message sender for external communication
@@ -344,6 +394,7 @@ impl RaftNode {
             let node_id = self.id;
             let heartbeat_interval_ms = self.config.heartbeat_interval_ms;
             let shutdown = shutdown_token.clone();
+            let hb_storage = self.storage.clone();
 
             AbortOnDrop(tokio::spawn(async move {
                 loop {
@@ -364,6 +415,7 @@ impl RaftNode {
                                 let peer_id = *peer_id;
                                 let peer_last_seen = peer_last_seen.clone();
                                 let state = state.clone();
+                                let hb_storage = hb_storage.clone();
 
                                 let req = AppendEntriesRequest {
                                     term,
@@ -392,7 +444,15 @@ impl RaftNode {
                                                 .await
                                                 .insert(peer_id, Instant::now());
                                             if resp.term > term {
-                                                state.write().await.become_follower(resp.term);
+                                                let mut s = state.write().await;
+                                                s.become_follower(resp.term);
+                                                if let Some(ref storage) = hb_storage {
+                                                    storage.save_hard_state(
+                                                        s.current_term,
+                                                        s.voted_for,
+                                                        s.log_offset,
+                                                    );
+                                                }
                                             }
                                         }
                                         Ok(Err(e)) => {
@@ -485,6 +545,10 @@ impl RaftNode {
         let last_log_term = state.last_log_term();
         let total_nodes = self.config.peers.len() + 1; // peers + self
         let majority = (total_nodes / 2) + 1;
+        // Persist become_candidate (term increment + self-vote)
+        if let Some(ref storage) = self.storage {
+            storage.save_hard_state(state.current_term, state.voted_for, state.log_offset);
+        }
         drop(state);
 
         tracing::info!(node_id = self.id, term, "Starting election");
@@ -514,7 +578,11 @@ impl RaftNode {
 
                     if resp.term > term {
                         // Higher term seen, become follower
-                        self.state.write().await.become_follower(resp.term);
+                        let mut s = self.state.write().await;
+                        s.become_follower(resp.term);
+                        if let Some(ref storage) = self.storage {
+                            storage.save_hard_state(s.current_term, s.voted_for, s.log_offset);
+                        }
                         return;
                     }
                     if resp.vote_granted {
@@ -601,6 +669,7 @@ impl RaftNode {
                     let state = self.state.clone();
                     let peer_last_seen = self.peer_last_seen.clone();
                     let snapshot_last = snapshot.last_included_index;
+                    let snap_storage = self.storage.clone();
 
                     tokio::spawn(async move {
                         match timeout(Duration::from_millis(500), client.install_snapshot(req))
@@ -613,6 +682,13 @@ impl RaftNode {
                                 let mut state = state.write().await;
                                 if resp.term > state.current_term {
                                     state.become_follower(resp.term);
+                                    if let Some(ref storage) = snap_storage {
+                                        storage.save_hard_state(
+                                            state.current_term,
+                                            state.voted_for,
+                                            state.log_offset,
+                                        );
+                                    }
                                     return;
                                 }
                                 // Advance next_index past the snapshot
@@ -682,6 +758,7 @@ impl RaftNode {
             let state = self.state.clone();
             let commit_notify = self.commit_notify_tx.clone();
             let peer_last_seen = self.peer_last_seen.clone();
+            let ae_storage = self.storage.clone();
 
             // Send AppendEntries asynchronously
             tokio::spawn(async move {
@@ -696,6 +773,13 @@ impl RaftNode {
 
                         if resp.term > state.current_term {
                             state.become_follower(resp.term);
+                            if let Some(ref storage) = ae_storage {
+                                storage.save_hard_state(
+                                    state.current_term,
+                                    state.voted_for,
+                                    state.log_offset,
+                                );
+                            }
                             return;
                         }
 
@@ -754,7 +838,15 @@ impl RaftNode {
 
         let entry = state.append_entry(command);
         let index = entry.index;
-        tracing::debug!(index, term = entry.term, "Appended command to log");
+        let term = entry.term;
+        let entry_clone = entry.clone();
+        drop(state);
+
+        tracing::debug!(index, term, "Appended command to log");
+
+        if let Some(ref storage) = self.storage {
+            storage.append_entry(&entry_clone);
+        }
 
         Ok(index)
     }
@@ -766,6 +858,11 @@ impl RaftNode {
     ) -> Result<crate::proto::VoteResponse, String> {
         let mut state = self.state.write().await;
         let response = handle_request_vote(&mut state, &req, self.id)?;
+
+        // Persist hard state — term or voted_for may have changed.
+        if let Some(ref storage) = self.storage {
+            storage.save_hard_state(state.current_term, state.voted_for, state.log_offset);
+        }
 
         // Reset election timeout if we granted vote
         if response.vote_granted {
@@ -782,7 +879,28 @@ impl RaftNode {
     ) -> Result<crate::proto::AppendEntriesResponse, String> {
         let mut state = self.state.write().await;
         let old_commit_index = state.commit_index;
+        let old_last_log_index = state.last_log_index();
         let response = handle_append_entries(&mut state, &req, self.id)?;
+
+        // Persist durable state changes.
+        if let Some(ref storage) = self.storage {
+            // Always save hard state — term or role may have changed.
+            storage.save_hard_state(state.current_term, state.voted_for, state.log_offset);
+
+            if response.success && !req.entries.is_empty() {
+                // Follower accepted entries: truncate DB from start_index then
+                // re-persist all entries the state machine now holds from there.
+                let start_index = req.prev_log_index + 1;
+                storage.truncate_from(start_index);
+                for entry in state.get_entries_from(start_index) {
+                    storage.append_entry(&entry);
+                }
+            } else if !response.success && state.last_log_index() < old_last_log_index {
+                // Consistency check failed with a partial truncation (term
+                // mismatch at prev_log entry). Sync the DB to match.
+                storage.truncate_from(state.last_log_index() + 1);
+            }
+        }
 
         // Notify if commit_index advanced
         if response.success && state.commit_index > old_commit_index {
@@ -859,7 +977,13 @@ impl RaftNode {
         self.send_timeout_now(target, term).await?;
 
         // Step down to follower
-        self.state.write().await.become_follower(term);
+        {
+            let mut s = self.state.write().await;
+            s.become_follower(term);
+            if let Some(ref storage) = self.storage {
+                storage.save_hard_state(s.current_term, s.voted_for, s.log_offset);
+            }
+        }
         tracing::info!(
             node_id = self.id,
             target,
@@ -943,9 +1067,18 @@ impl RaftNode {
         let mut state = self.state.write().await;
         let response = handle_install_snapshot(&mut state, &req, self.id)?;
 
+        // Persist hard state (term may have changed due to become_follower).
+        if let Some(ref storage) = self.storage {
+            storage.save_hard_state(state.current_term, state.voted_for, state.log_offset);
+        }
+
         // If the snapshot was installed, store it for the scheduler loop to rebuild state
         if state.snapshot.is_some() && state.log_offset >= req.last_included_index {
             if let Some(ref snapshot) = state.snapshot {
+                // Persist the installed snapshot and delete compacted log entries.
+                if let Some(ref storage) = self.storage {
+                    storage.save_snapshot(snapshot, state.log_offset);
+                }
                 let mut pending = self.pending_snapshot.lock().await;
                 *pending = Some(snapshot.clone());
             }

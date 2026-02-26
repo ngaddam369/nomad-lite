@@ -14,6 +14,7 @@
 - **Graceful Shutdown** - SIGTERM/SIGINT handling with drain period for in-flight work
 - **Leader Draining & Transfer** - Voluntary leadership transfer and node draining for safe maintenance
 - **Batch Replication** - Multiple job status updates batched into a single Raft log entry for reduced consensus overhead
+- **State Persistence** - Optional RocksDB-backed Raft log, term, and snapshot storage via `--data-dir`; nodes survive restarts and rejoin without losing committed state
 - **Log Compaction** - Automatic in-memory log prefix truncation with snapshot transfer to slow followers
 - **Proposal Backpressure** - Bounded proposal queue (256 slots); clients get an immediate `RESOURCE_EXHAUSTED` when the leader is overloaded and a `DEADLINE_EXCEEDED` if a commit stalls, rather than hanging indefinitely
 

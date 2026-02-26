@@ -34,6 +34,14 @@ Each log entry carries one of the following commands applied to the job queue on
 
 When the in-memory log exceeds 1000 entries, the committed prefix is replaced with a snapshot of the current state (job queue + worker registrations). This bounds memory usage regardless of throughput. Followers that fall too far behind receive the snapshot via `InstallSnapshot` RPC instead of replaying individual entries.
 
+## State Persistence
+
+By default, all Raft state (log, term, voted-for, snapshot) is held in memory and lost on restart.
+Pass `--data-dir <path>` to enable a local RocksDB store. On startup the node reloads its persisted
+term, voted-for, and committed log entries and replays any stored snapshot into the job queue before
+rejoining the cluster. Storage failures cause an immediate crash (crash-fail-safe) rather than silent
+data loss.
+
 ## Safety Guarantees
 
 - Election safety: One leader per term

@@ -9,7 +9,7 @@ use crate::config::{NodeConfig, SandboxConfig};
 use crate::dashboard::{run_dashboard, DashboardState};
 use crate::grpc::GrpcServer;
 use crate::raft::state::{JobStatusUpdate, Snapshot, SnapshotJob};
-use crate::raft::{Command, RaftNode};
+use crate::raft::{Command, PersistedState, RaftNode, RaftStorage};
 use crate::scheduler::assigner::JobAssigner;
 use crate::scheduler::{Job, JobQueue, JobStatus};
 use crate::shutdown::install_shutdown_handler;
@@ -42,7 +42,18 @@ impl Node {
         Self,
         tokio::sync::mpsc::Receiver<crate::raft::node::RaftMessage>,
     ) {
-        let (raft_node, raft_rx) = RaftNode::new(config.clone(), tls_identity.clone());
+        // Open RocksDB and load persisted state when a data directory is configured.
+        let (storage, persisted): (Option<Arc<RaftStorage>>, Option<PersistedState>) =
+            if let Some(ref data_dir) = config.data_dir {
+                let storage = RaftStorage::open(data_dir);
+                let persisted = storage.load();
+                (Some(Arc::new(storage)), persisted)
+            } else {
+                (None, None)
+            };
+
+        let (raft_node, raft_rx) =
+            RaftNode::new_with_storage(config.clone(), tls_identity.clone(), storage, persisted);
 
         let node = Self {
             executor: JobExecutor::new(config.sandbox.clone()),
@@ -79,6 +90,10 @@ impl Node {
         raft_rx: tokio::sync::mpsc::Receiver<crate::raft::node::RaftMessage>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let shutdown_token = install_shutdown_handler();
+
+        // Restore snapshot into the pending queue so the scheduler loop rebuilds
+        // state machines from it before processing new committed entries.
+        self.raft_node.restore_snapshot_for_scheduler().await;
 
         // Connect to peers (best-effort initial attempt)
         self.raft_node.connect_to_peers().await;
@@ -412,6 +427,14 @@ impl Node {
         let mut state = raft_node.state.write().await;
         let old_len = state.log.len();
         state.compact_log(snapshot);
+
+        // Persist the snapshot and updated log offset.
+        if let Some(ref storage) = raft_node.storage {
+            if let Some(ref snap) = state.snapshot {
+                storage.save_snapshot(snap, state.log_offset);
+            }
+        }
+
         tracing::info!(
             old_log_len = old_len,
             new_log_len = state.log.len(),

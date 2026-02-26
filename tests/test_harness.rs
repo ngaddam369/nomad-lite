@@ -45,6 +45,7 @@ pub fn test_node_config(node_id: u64, port: u16, peers: Vec<(u64, u16)>) -> Node
         heartbeat_interval_ms: 20,
         sandbox: SandboxConfig::default(),
         tls: TlsConfig::default(),
+        data_dir: None,
     }
 }
 

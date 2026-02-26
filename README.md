@@ -18,8 +18,11 @@ A distributed job scheduler with custom Raft consensus, similar to Nomad or Kube
 # Build and install
 cargo install --path .
 
-# Run single node with dashboard
+# Run single node with dashboard (in-memory state)
 nomad-lite server --node-id 1 --port 50051 --dashboard-port 8080
+
+# Run single node with persistent state (survives restarts)
+nomad-lite server --node-id 1 --port 50051 --dashboard-port 8080 --data-dir /var/lib/nomad-lite/node1
 
 # Open http://localhost:8080
 

@@ -343,6 +343,7 @@ mod integration {
             heartbeat_interval_ms: 50,
             sandbox: SandboxConfig::default(),
             tls: tls_config,
+            data_dir: None,
         }
     }
 

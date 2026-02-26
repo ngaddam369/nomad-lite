@@ -26,3 +26,4 @@ cargo test --test <name>  # Specific test suite
 | `drain_tests` | Node draining, job rejection during drain, leadership handoff |
 | `compaction_tests` | Log compaction trigger, snapshot transfer to slow followers, state consistency |
 | `backpressure_tests` | Full proposal channel returns `RESOURCE_EXHAUSTED` immediately; stalled Raft loop returns `DEADLINE_EXCEEDED` after 5 s |
+| `persistence_tests` | RocksDB storage: fresh DB returns `None`, hard state/log reload, log truncation, snapshot compaction deletes old entries, node term survives restart |

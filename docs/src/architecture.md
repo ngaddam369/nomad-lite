@@ -51,7 +51,7 @@ graph TB
 
     subgraph Core[Core Components]
         RAFT[Raft Module<br/>Leader Election<br/>Log Replication]
-        LOG[Raft Log<br/>In-Memory]
+        LOG[Raft Log<br/>In-Memory or RocksDB]
     end
 
     subgraph Loops[Background Loops]

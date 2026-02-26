@@ -23,7 +23,9 @@
 pub mod node;
 pub mod rpc;
 pub mod state;
+pub mod storage;
 pub mod timer;
 
 pub use node::RaftNode;
 pub use state::{Command, LogEntry, RaftRole, RaftState, Snapshot, SnapshotJob};
+pub use storage::{PersistedState, RaftStorage};

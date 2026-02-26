@@ -31,6 +31,7 @@ nomad-lite
 | `--cert` | - | Node certificate path |
 | `--key` | - | Node private key path |
 | `--allow-insecure` | false | Run without TLS if certs fail |
+| `--data-dir` | - | Path to RocksDB data directory for persistence (optional; omit for in-memory) |
 
 ## Client Options
 

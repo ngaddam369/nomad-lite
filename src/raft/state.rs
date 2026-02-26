@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::scheduler::JobStatus;
 
 /// A job captured in a snapshot (serialized state of the job queue).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotJob {
     pub id: Uuid,
     pub command: String,
@@ -19,7 +20,7 @@ pub struct SnapshotJob {
 }
 
 /// A snapshot of the state machines at a given log index.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
     pub last_included_index: u64,
     pub last_included_term: u64,
@@ -46,7 +47,7 @@ impl std::fmt::Display for RaftRole {
 }
 
 /// A single job status update, used in both single and batch commands.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobStatusUpdate {
     pub job_id: Uuid,
     pub status: JobStatus,
@@ -56,7 +57,7 @@ pub struct JobStatusUpdate {
 }
 
 /// Commands that can be replicated through Raft
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Command {
     /// Submit a new job
     SubmitJob {
@@ -83,7 +84,7 @@ pub enum Command {
 }
 
 /// A single entry in the Raft log
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogEntry {
     pub term: u64,
     pub index: u64,

@@ -106,6 +106,12 @@ struct ServerArgs {
     /// Useful for development. NOT recommended for production.
     #[arg(long)]
     allow_insecure: bool,
+
+    /// Directory for RocksDB state persistence (optional).
+    /// When set, the node survives restarts without losing committed state.
+    /// Omit for in-memory-only operation (default).
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
 }
 
 // =============================================================================
@@ -488,6 +494,7 @@ async fn run_server(args: ServerArgs) -> Result<(), Box<dyn std::error::Error>> 
         heartbeat_interval_ms: 50,
         sandbox,
         tls: tls_config,
+        data_dir: args.data_dir,
     };
 
     tracing::info!(

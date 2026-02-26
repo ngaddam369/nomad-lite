@@ -76,6 +76,8 @@ pub struct NodeConfig {
     pub heartbeat_interval_ms: u64,
     pub sandbox: SandboxConfig,
     pub tls: TlsConfig,
+    /// Directory for RocksDB state persistence. `None` = in-memory only (default).
+    pub data_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -98,6 +100,7 @@ impl Default for NodeConfig {
             heartbeat_interval_ms: 50,
             sandbox: SandboxConfig::default(),
             tls: TlsConfig::default(),
+            data_dir: None,
         }
     }
 }
