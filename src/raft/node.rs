@@ -340,36 +340,6 @@ impl RaftNode {
         }
     }
 
-    /// Disconnect from all peers (full isolation).
-    pub async fn disconnect_all_peers(&self) {
-        let mut peers = self.peers.lock().await;
-        let mut disconnected = self.disconnected_peers.lock().await;
-        for (id, client) in peers.drain() {
-            disconnected.insert(id, client);
-        }
-        // Also cut all heartbeat channels.
-        let mut hb_peers = self.heartbeat_peers.lock().await;
-        let mut hb_disconnected = self.disconnected_heartbeat_peers.lock().await;
-        for (id, client) in hb_peers.drain() {
-            hb_disconnected.insert(id, client);
-        }
-    }
-
-    /// Reconnect all previously disconnected peers.
-    pub async fn reconnect_all_peers(&self) {
-        let mut peers = self.peers.lock().await;
-        let mut disconnected = self.disconnected_peers.lock().await;
-        for (id, client) in disconnected.drain() {
-            peers.insert(id, client);
-        }
-        // Restore all heartbeat channels.
-        let mut hb_peers = self.heartbeat_peers.lock().await;
-        let mut hb_disconnected = self.disconnected_heartbeat_peers.lock().await;
-        for (id, client) in hb_disconnected.drain() {
-            hb_peers.insert(id, client);
-        }
-    }
-
     /// Run the Raft node main loop
     pub async fn run(
         &self,

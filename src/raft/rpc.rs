@@ -298,7 +298,7 @@ fn ms_to_datetime(ms: i64) -> DateTime<Utc> {
     Utc.timestamp_millis_opt(ms).single().unwrap_or_default()
 }
 
-fn proto_status_to_internal(status: crate::proto::JobStatus) -> JobStatus {
+pub(crate) fn proto_status_to_internal(status: crate::proto::JobStatus) -> JobStatus {
     match status {
         crate::proto::JobStatus::Pending => JobStatus::Pending,
         crate::proto::JobStatus::Running => JobStatus::Running,

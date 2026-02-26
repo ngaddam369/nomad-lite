@@ -9,10 +9,11 @@ use crate::proto::{
     WorkerHeartbeatRequest, WorkerHeartbeatResponse,
 };
 use crate::raft::node::RaftMessage;
+use crate::raft::rpc::proto_status_to_internal;
 use crate::raft::state::JobStatusUpdate;
 use crate::raft::{Command, RaftNode};
 use crate::scheduler::assigner::JobAssigner;
-use crate::scheduler::{JobQueue, JobStatus};
+use crate::scheduler::JobQueue;
 
 /// Internal gRPC service for node-to-node communication.
 /// Used to fetch job output from the node that executed the job,
@@ -147,16 +148,5 @@ impl InternalService for InternalServiceImpl {
         }
 
         Ok(Response::new(ForwardJobStatusResponse {}))
-    }
-}
-
-fn proto_status_to_internal(status: crate::proto::JobStatus) -> JobStatus {
-    match status {
-        crate::proto::JobStatus::Pending | crate::proto::JobStatus::Unspecified => {
-            JobStatus::Pending
-        }
-        crate::proto::JobStatus::Running => JobStatus::Running,
-        crate::proto::JobStatus::Completed => JobStatus::Completed,
-        crate::proto::JobStatus::Failed => JobStatus::Failed,
     }
 }

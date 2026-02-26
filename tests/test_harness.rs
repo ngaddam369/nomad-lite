@@ -1,6 +1,9 @@
 //! Test harness for multi-node Raft cluster integration tests.
 //!
 //! Provides utilities for spawning, managing, and testing multi-node clusters.
+// Each test binary compiles this file independently; methods used by one binary
+// appear unused in others. Suppress the spurious cross-binary dead_code warnings.
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::future::Future;
