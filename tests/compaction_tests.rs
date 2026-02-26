@@ -174,6 +174,163 @@ async fn test_snapshot_sent_to_slow_follower() {
     cluster.shutdown().await;
 }
 
+/// Test that two successive compaction rounds both trigger and the cluster stays healthy.
+#[tokio::test]
+async fn test_multiple_compaction_rounds() {
+    let mut cluster = TestCluster::new(3, 51400).await;
+
+    cluster
+        .wait_for_leader(Duration::from_secs(5))
+        .await
+        .expect("Leader should be elected");
+
+    // Round 1: exceed the 1 000-entry compaction threshold
+    for i in 0..1100 {
+        cluster
+            .submit_job(&format!("echo round1_{}", i))
+            .await
+            .unwrap_or_else(|e| panic!("Round-1 job {} failed: {}", i, e));
+    }
+    assert!(
+        cluster
+            .wait_for_commit_on_all(1100, Duration::from_secs(120))
+            .await,
+        "Round-1 jobs should replicate to all nodes"
+    );
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let leader_id = cluster.get_leader_id().await.unwrap();
+    let first_offset = {
+        let leader = cluster.get_node(leader_id).unwrap();
+        let state = leader.raft_node.state.read().await;
+        assert!(
+            state.log_offset > 0,
+            "First compaction should have occurred"
+        );
+        state.log_offset
+    };
+
+    // Round 2: another 1 100 entries — triggers a second compaction
+    for i in 0..1100 {
+        cluster
+            .submit_job(&format!("echo round2_{}", i))
+            .await
+            .unwrap_or_else(|e| panic!("Round-2 job {} failed: {}", i, e));
+    }
+    assert!(
+        cluster
+            .wait_for_commit_on_all(2200, Duration::from_secs(120))
+            .await,
+        "Round-2 jobs should replicate to all nodes"
+    );
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    {
+        let leader = cluster.get_node(leader_id).unwrap();
+        let state = leader.raft_node.state.read().await;
+        assert!(
+            state.log_offset > first_offset,
+            "Second compaction should have advanced log_offset (was {}, now {})",
+            first_offset,
+            state.log_offset
+        );
+    }
+
+    // Cluster must still accept new work after two compaction rounds
+    cluster
+        .submit_job("echo post_compaction")
+        .await
+        .expect("Post-compaction job submission should succeed");
+    assert!(
+        cluster
+            .wait_for_commit_on_all(2201, Duration::from_secs(30))
+            .await,
+        "Post-compaction job should replicate"
+    );
+
+    cluster.shutdown().await;
+}
+
+/// When an isolated follower misses entries that are still below the compaction threshold,
+/// it catches up via AppendEntries (no snapshot is available) once the partition heals.
+#[tokio::test]
+async fn test_snapshot_replication_falls_back_to_entries() {
+    let mut cluster = TestCluster::new(3, 51500).await;
+
+    let leader_id = cluster
+        .wait_for_leader(Duration::from_secs(5))
+        .await
+        .expect("Leader should be elected");
+
+    // Find a follower and immediately isolate it before any compaction occurs
+    let follower_id = cluster
+        .nodes
+        .keys()
+        .find(|&&id| id != leader_id)
+        .copied()
+        .unwrap();
+    cluster.isolate_node(follower_id).await;
+
+    let majority_nodes: Vec<u64> = cluster
+        .nodes
+        .keys()
+        .filter(|&&id| id != follower_id)
+        .copied()
+        .collect();
+
+    // Accumulate 50 entries — well below the 1 000-entry compaction threshold
+    for i in 0..50 {
+        cluster
+            .submit_job_to_node(leader_id, &format!("echo entry_{}", i))
+            .await
+            .unwrap_or_else(|e| panic!("Job {} failed: {}", i, e));
+    }
+
+    assert!(
+        cluster
+            .wait_for_commit_on_nodes(&majority_nodes, 50, Duration::from_secs(30))
+            .await,
+        "Majority should commit 50 entries"
+    );
+
+    // Verify no compaction has happened (only 50 entries < 1 000 threshold)
+    {
+        let leader = cluster.get_node(leader_id).unwrap();
+        let state = leader.raft_node.state.read().await;
+        assert_eq!(
+            state.log_offset, 0,
+            "No compaction should have occurred with only 50 entries"
+        );
+    }
+
+    // Heal the partition — follower must catch up via AppendEntries (no snapshot available)
+    cluster.heal_node(follower_id).await;
+
+    let follower_raft = cluster.get_node(follower_id).unwrap().raft_node.clone();
+    assert_eventually(
+        || async {
+            let state = follower_raft.state.read().await;
+            state.last_log_index() >= 50
+        },
+        Duration::from_secs(15),
+        "Follower should catch up via AppendEntries",
+    )
+    .await;
+
+    // The follower must NOT have received a snapshot (log_offset stays 0)
+    {
+        let follower = cluster.get_node(follower_id).unwrap();
+        let state = follower.raft_node.state.read().await;
+        assert_eq!(
+            state.log_offset, 0,
+            "Follower should have caught up via AppendEntries, not a snapshot"
+        );
+        assert_eq!(state.last_log_index(), 50);
+    }
+
+    cluster.shutdown().await;
+}
+
 /// Test that job queue state is consistent across all nodes after compaction.
 #[tokio::test]
 async fn test_state_consistency_after_compaction() {

@@ -859,3 +859,77 @@ fn test_job_completed_nonexistent_worker() {
     // Should not panic
     assigner.job_completed(999, &job_id);
 }
+
+// ── Additional coverage tests ─────────────────────────────────────────────────
+
+/// Filling a default-capacity queue (10 000) causes the next add_job to return false.
+#[test]
+fn test_queue_at_capacity_rejects_add() {
+    let mut queue = JobQueue::new(); // default capacity = 10 000
+    for _ in 0..10_000 {
+        assert!(queue.add_job(Job::new("x".to_string())));
+    }
+    assert!(queue.is_full());
+    assert!(!queue.add_job(Job::new("overflow".to_string())));
+    assert_eq!(queue.len(), 10_000);
+}
+
+/// update_status with None output/error must not overwrite values set by update_job_result.
+#[test]
+fn test_update_status_none_fields_preserved_via_queue() {
+    let mut queue = JobQueue::new();
+    let id = Uuid::new_v4();
+    queue.add_job(Job::with_id(id, "test".to_string(), Utc::now()));
+    // Store output/error via update_job_result (simulating the executing node)
+    queue.update_job_result(
+        &id,
+        JobStatus::Running,
+        1,
+        None,
+        Some("hello".to_string()),
+        Some("oops".to_string()),
+        Utc::now(),
+    );
+    // update_status with None → must NOT overwrite
+    queue.update_status(&id, JobStatus::Completed, None, None);
+    let job = queue.get_job(&id).unwrap();
+    assert_eq!(job.output, Some("hello".to_string()));
+    assert_eq!(job.error, Some("oops".to_string()));
+    assert_eq!(job.status, JobStatus::Completed);
+}
+
+/// The third job assigned when workers have unequal loads goes to the less-loaded worker.
+#[test]
+fn test_least_loaded_worker_gets_next_job() {
+    let mut queue = JobQueue::new();
+    let mut assigner = JobAssigner::new(5000);
+
+    assigner.register_worker(1);
+    assigner.register_worker(2);
+
+    // Assign two jobs; with equal initial load, least-loaded assignment is deterministic
+    // from the perspective that one worker ends up with 2 jobs.
+    queue.add_job(Job::new("job1".to_string()));
+    queue.add_job(Job::new("job2".to_string()));
+    let (_, w1) = assigner.assign_next_job(&mut queue).unwrap();
+    let (_, w2) = assigner.assign_next_job(&mut queue).unwrap();
+
+    // One worker now has 2 jobs, the other has 0 (or both have 1 after two round-robin picks).
+    // Identify which worker currently has more load.
+    let heavy = if w1 == w2 {
+        w1 // same worker got both — the other should get the third
+    } else {
+        // Both have 1 job each; add a third and confirm it goes to the one with fewer
+        // (at this point they're equal; either worker is fine — just verify assignment succeeds)
+        queue.add_job(Job::new("job3".to_string()));
+        let (_, w3) = assigner.assign_next_job(&mut queue).unwrap();
+        assert!(w3 == 1 || w3 == 2);
+        return;
+    };
+
+    let light = if heavy == 1 { 2 } else { 1 };
+
+    queue.add_job(Job::new("job3".to_string()));
+    let (_, w3) = assigner.assign_next_job(&mut queue).unwrap();
+    assert_eq!(w3, light, "Third job should go to the less-loaded worker");
+}

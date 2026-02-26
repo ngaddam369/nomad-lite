@@ -128,3 +128,88 @@ impl JobAssigner {
         self.workers.clear();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scheduler::job::Job;
+    use crate::scheduler::queue::JobQueue;
+    use uuid::Uuid;
+
+    #[test]
+    fn test_assign_to_least_loaded_worker() {
+        let mut queue = JobQueue::new();
+        let mut assigner = JobAssigner::new(5000);
+        assigner.register_worker(1);
+        assigner.register_worker(2);
+        // Give worker 1 two fake running jobs so it is more loaded
+        let fake1 = Uuid::new_v4();
+        let fake2 = Uuid::new_v4();
+        assigner
+            .workers
+            .get_mut(&1)
+            .unwrap()
+            .running_jobs
+            .insert(fake1);
+        assigner
+            .workers
+            .get_mut(&1)
+            .unwrap()
+            .running_jobs
+            .insert(fake2);
+        queue.add_job(Job::new("test".to_string()));
+        let result = assigner.assign_next_job(&mut queue);
+        assert!(result.is_some());
+        let (_, worker_id) = result.unwrap();
+        assert_eq!(worker_id, 2);
+    }
+
+    #[test]
+    fn test_assign_with_equal_load_assigns_one_job() {
+        let mut queue = JobQueue::new();
+        let mut assigner = JobAssigner::new(5000);
+        assigner.register_worker(1);
+        assigner.register_worker(2);
+        queue.add_job(Job::new("test".to_string()));
+        let result = assigner.assign_next_job(&mut queue);
+        assert!(result.is_some());
+        let (job_id, _) = result.unwrap();
+        let job = queue.get_job(&job_id).unwrap();
+        assert_eq!(job.status, crate::scheduler::job::JobStatus::Running);
+    }
+
+    #[test]
+    fn test_job_completed_reduces_load() {
+        let mut queue = JobQueue::new();
+        let mut assigner = JobAssigner::new(5000);
+        assigner.register_worker(1);
+        queue.add_job(Job::new("job1".to_string()));
+        queue.add_job(Job::new("job2".to_string()));
+        let (id1, w) = assigner.assign_next_job(&mut queue).unwrap();
+        let _ = assigner.assign_next_job(&mut queue).unwrap();
+        assert_eq!(assigner.workers.get(&1).unwrap().running_jobs.len(), 2);
+        assigner.job_completed(w, &id1);
+        assert_eq!(assigner.workers.get(&1).unwrap().running_jobs.len(), 1);
+    }
+
+    #[test]
+    fn test_check_dead_workers_detects_expired() {
+        let mut assigner = JobAssigner::new(0); // 0ms timeout → immediately dead
+        assigner.register_worker(1);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        let dead = assigner.check_dead_workers();
+        assert!(dead.contains(&1));
+    }
+
+    #[test]
+    fn test_available_workers_excludes_dead() {
+        let mut queue = JobQueue::new();
+        let mut assigner = JobAssigner::new(0); // 0ms timeout → immediately dead
+        assigner.register_worker(1);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        queue.add_job(Job::new("test".to_string()));
+        // No alive workers → assign_next_job returns None
+        let result = assigner.assign_next_job(&mut queue);
+        assert!(result.is_none());
+    }
+}

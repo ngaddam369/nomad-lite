@@ -12,7 +12,7 @@ cargo test --test <name>  # Specific test suite
 |-------|-------------|
 | `lib` (unit) | Config, Raft state machine, RPC serialization |
 | `scheduler_tests` | Job queue, worker assignment, heartbeats |
-| `raft_rpc_tests` | AppendEntries, RequestVote, term handling |
+| `raft_rpc_tests` | AppendEntries, RequestVote, InstallSnapshot, term handling, compaction boundary cases, re-election vote reset |
 | `integration_tests` | Multi-node election, replication, consistency |
 | `failover_tests` | Leader crash, re-election, quorum loss |
 | `partition_tests` | Network partitions, split-brain prevention, healing |
@@ -24,6 +24,6 @@ cargo test --test <name>  # Specific test suite
 | `dashboard_tests` | REST API endpoints |
 | `leadership_transfer_tests` | Voluntary leadership transfer, auto-select, non-leader rejection |
 | `drain_tests` | Node draining, job rejection during drain, leadership handoff |
-| `compaction_tests` | Log compaction trigger, snapshot transfer to slow followers, state consistency |
+| `compaction_tests` | Log compaction trigger, snapshot transfer to slow followers, multiple compaction rounds, AppendEntries fallback when below compaction threshold, state consistency |
 | `backpressure_tests` | Full proposal channel returns `RESOURCE_EXHAUSTED` immediately; stalled Raft loop returns `DEADLINE_EXCEEDED` after 5 s |
-| `persistence_tests` | RocksDB storage: fresh DB returns `None`, hard state/log reload, log truncation, snapshot compaction deletes old entries, node term survives restart |
+| `persistence_tests` | RocksDB storage: fresh DB returns `None`, hard state/log reload, log truncation, snapshot compaction deletes old entries, post-compaction state reconstruction on restart, node term survives restart |

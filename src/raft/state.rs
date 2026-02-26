@@ -351,6 +351,153 @@ impl Default for RaftState {
 mod tests {
     use super::*;
 
+    fn make_entry(index: u64, term: u64) -> LogEntry {
+        LogEntry {
+            term,
+            index,
+            command: Command::Noop,
+        }
+    }
+
+    fn empty_snapshot(last_included_index: u64, last_included_term: u64) -> Snapshot {
+        Snapshot {
+            last_included_index,
+            last_included_term,
+            jobs: vec![],
+            workers: vec![],
+        }
+    }
+
+    // ── compact_log tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_compact_log_basic() {
+        let mut state = RaftState::new();
+        state.current_term = 1;
+        for i in 1u64..=5 {
+            state.log.push(make_entry(i, 1));
+        }
+        state.compact_log(empty_snapshot(3, 1));
+        assert_eq!(state.log_offset, 3);
+        assert_eq!(state.log.len(), 2);
+        assert_eq!(state.log[0].index, 4);
+        assert_eq!(state.log[1].index, 5);
+        assert!(state.snapshot.is_some());
+    }
+
+    #[test]
+    fn test_compact_log_idempotent() {
+        let mut state = RaftState::new();
+        for i in 1u64..=5 {
+            state.log.push(make_entry(i, 1));
+        }
+        let snap = empty_snapshot(3, 1);
+        state.compact_log(snap.clone());
+        let offset_after = state.log_offset;
+        let len_after = state.log.len();
+        // Second call with same snapshot index — no-op (new_offset <= log_offset)
+        state.compact_log(snap);
+        assert_eq!(state.log_offset, offset_after);
+        assert_eq!(state.log.len(), len_after);
+    }
+
+    #[test]
+    fn test_compact_log_drains_to_empty() {
+        let mut state = RaftState::new();
+        for i in 1u64..=5 {
+            state.log.push(make_entry(i, 1));
+        }
+        state.compact_log(empty_snapshot(5, 1));
+        assert!(state.log.is_empty());
+        assert_eq!(state.log_offset, 5);
+    }
+
+    // ── install_snapshot tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_install_snapshot_newer() {
+        let mut state = RaftState::new();
+        state.current_term = 1;
+        for i in 1u64..=5 {
+            state.log.push(make_entry(i, 1));
+        }
+        let result = state.install_snapshot(empty_snapshot(3, 1));
+        assert!(result);
+        assert_eq!(state.log_offset, 3);
+        assert_eq!(state.log.len(), 2);
+        assert_eq!(state.log[0].index, 4);
+        assert_eq!(state.log[1].index, 5);
+        assert!(state.commit_index >= 3);
+        assert!(state.last_applied >= 3);
+    }
+
+    #[test]
+    fn test_install_snapshot_stale() {
+        let mut state = RaftState::new();
+        state.log_offset = 10;
+        let result = state.install_snapshot(empty_snapshot(5, 1));
+        assert!(!result);
+        assert_eq!(state.log_offset, 10);
+    }
+
+    #[test]
+    fn test_install_snapshot_partial_trim() {
+        let mut state = RaftState::new();
+        for i in 1u64..=20 {
+            state.log.push(make_entry(i, 1));
+        }
+        let result = state.install_snapshot(empty_snapshot(10, 1));
+        assert!(result);
+        assert_eq!(state.log.len(), 10); // entries 11-20 remain
+        assert_eq!(state.log[0].index, 11);
+        assert_eq!(state.log[9].index, 20);
+    }
+
+    #[test]
+    fn test_install_snapshot_updates_commit_and_applied() {
+        let mut state = RaftState::new();
+        assert_eq!(state.commit_index, 0);
+        assert_eq!(state.last_applied, 0);
+        state.install_snapshot(empty_snapshot(15, 1));
+        assert_eq!(state.commit_index, 15);
+        assert_eq!(state.last_applied, 15);
+    }
+
+    // ── last_log_term / first_log_index / is_compacted ────────────────────────
+
+    #[test]
+    fn test_last_log_term_snapshot_only() {
+        let mut state = RaftState::new();
+        state.log_offset = 5;
+        state.snapshot = Some(empty_snapshot(5, 7));
+        assert_eq!(state.last_log_term(), 7);
+    }
+
+    #[test]
+    fn test_first_log_index_empty() {
+        let state = RaftState::new();
+        assert_eq!(state.first_log_index(), 0);
+    }
+
+    #[test]
+    fn test_first_log_index_with_offset() {
+        let mut state = RaftState::new();
+        state.log_offset = 5;
+        state.log.push(make_entry(6, 1));
+        state.log.push(make_entry(7, 1));
+        state.log.push(make_entry(8, 1));
+        assert_eq!(state.first_log_index(), 6); // log_offset + 1
+    }
+
+    #[test]
+    fn test_is_compacted_boundaries() {
+        let mut state = RaftState::new();
+        state.log_offset = 5;
+        assert!(state.is_compacted(5)); // index == log_offset → compacted
+        assert!(!state.is_compacted(6)); // index > log_offset → not compacted
+        assert!(!state.is_compacted(0)); // index 0 is never compacted
+    }
+
     #[test]
     fn test_new_state_is_follower() {
         let state = RaftState::new();

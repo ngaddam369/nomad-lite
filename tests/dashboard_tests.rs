@@ -15,6 +15,8 @@ use nomad_lite::config::NodeConfig;
 use nomad_lite::dashboard::{
     cluster_status_handler, index_handler, list_jobs_handler, submit_job_handler, DashboardState,
 };
+use nomad_lite::raft::node::RaftMessage;
+use nomad_lite::raft::state::RaftRole;
 use nomad_lite::raft::RaftNode;
 use nomad_lite::scheduler::{Job, JobQueue, JobStatus};
 
@@ -242,6 +244,94 @@ async fn test_submit_job_rejected_when_draining() {
     let json: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(json["success"], false);
     assert!(json["error"].as_str().unwrap().contains("draining"));
+}
+
+/// Verify queue-full path returns 503 with "capacity" in the error message.
+/// Requires forcing the node into leader state and providing a fake Raft responder
+/// so the handler proceeds past the is_leader() check to the add_job() call.
+#[tokio::test]
+async fn test_submit_job_queue_at_capacity() {
+    let config = NodeConfig::default();
+    let (raft_node, mut raft_rx) = RaftNode::new(config, None);
+
+    // Small queue already at capacity
+    let job_queue = Arc::new(RwLock::new(JobQueue::with_capacity(1)));
+    job_queue
+        .write()
+        .await
+        .add_job(Job::new("existing".to_string()));
+
+    // Force node to think it is the leader
+    {
+        let mut state = raft_node.state.write().await;
+        state.role = RaftRole::Leader;
+        state.leader_id = Some(1);
+    }
+
+    let state = DashboardState {
+        raft_node: Arc::new(raft_node),
+        job_queue,
+        draining: Arc::new(AtomicBool::new(false)),
+    };
+
+    // Fake Raft responder: immediately reply Ok(1) so the handler advances past Raft
+    tokio::spawn(async move {
+        while let Some(msg) = raft_rx.recv().await {
+            if let RaftMessage::AppendCommand { response_tx, .. } = msg {
+                let _ = response_tx.send(Ok(1));
+            }
+        }
+    });
+
+    let app = create_test_app(state);
+    let body = serde_json::to_string(&json!({ "command": "echo hi" })).unwrap();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["success"], false);
+    assert!(json["error"].as_str().unwrap().contains("capacity"));
+}
+
+/// Verify that the /api/cluster response always includes a "role" field.
+#[tokio::test]
+async fn test_cluster_status_role_field() {
+    let (state, _rx) = create_test_state();
+    let app = create_test_app(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/cluster")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+
+    assert!(
+        json.get("role").is_some(),
+        "role field must be present in cluster status"
+    );
+    assert_eq!(
+        json["role"], "follower",
+        "a fresh node starts as a follower"
+    );
 }
 
 #[tokio::test]

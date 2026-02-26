@@ -1,5 +1,6 @@
 use nomad_lite::config::SandboxConfig;
-use nomad_lite::scheduler::JobStatus;
+use nomad_lite::scheduler::job::Job;
+use nomad_lite::scheduler::{JobQueue, JobStatus};
 use nomad_lite::worker::JobExecutor;
 use uuid::Uuid;
 
@@ -123,6 +124,52 @@ async fn test_execute_with_special_characters() {
     assert_eq!(result.status, JobStatus::Completed);
     // Single quotes prevent variable expansion
     assert_eq!(result.output, Some("hello $USER\n".to_string()));
+}
+
+/// Full in-process job lifecycle: add job to queue → execute → update queue with result.
+/// Verifies that the executor output feeds back into the queue correctly.
+#[tokio::test]
+async fn test_job_lifecycle_end_to_end() {
+    let executor = test_executor();
+    let mut queue = JobQueue::new();
+
+    // 1. Add a pending job
+    let job = Job::new("echo lifecycle-test".to_string());
+    let job_id = job.id;
+    assert!(queue.add_job(job));
+
+    // 2. Assign the job to a worker (worker_id=1)
+    assert!(queue.assign_job(&job_id, 1));
+    assert_eq!(queue.get_job(&job_id).unwrap().status, JobStatus::Running);
+
+    // 3. Execute the job
+    let result = executor.execute(job_id, "echo lifecycle-test").await;
+
+    // 4. Store the execution result back in the queue
+    let completed_at = chrono::Utc::now();
+    assert!(queue.update_job_result(
+        &job_id,
+        result.status,
+        1,
+        result.exit_code,
+        result.output.clone(),
+        result.error.clone(),
+        completed_at,
+    ));
+
+    // 5. Verify final state
+    let job = queue.get_job(&job_id).unwrap();
+    assert_eq!(job.status, JobStatus::Completed);
+    assert_eq!(job.exit_code, Some(0));
+    assert!(
+        job.output
+            .as_deref()
+            .unwrap_or("")
+            .contains("lifecycle-test"),
+        "output should contain 'lifecycle-test', got: {:?}",
+        job.output
+    );
+    assert_eq!(job.executed_by, Some(1));
 }
 
 #[tokio::test]

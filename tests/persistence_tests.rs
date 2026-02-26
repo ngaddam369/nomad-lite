@@ -133,6 +133,45 @@ fn test_save_snapshot_deletes_compacted_log() {
     }
 }
 
+/// After a compaction (snapshot saved + old entries deleted), reopening the storage
+/// reconstructs the correct log_offset, snapshot, and post-compaction log entries.
+#[test]
+fn test_restart_after_compaction() {
+    let dir = TempDir::new().unwrap();
+
+    // First run: write 5 entries, then compact at index 3
+    {
+        let storage = RaftStorage::open(dir.path());
+        storage.save_hard_state(1, None, 0);
+        for i in 1u64..=5 {
+            storage.append_entry(&noop_entry(1, i));
+        }
+        // Compact: snapshot covers 1-3, deletes those entries from RocksDB
+        let snapshot = empty_snapshot(3, 1);
+        storage.save_snapshot(&snapshot, 3);
+    }
+
+    // Reopen and verify post-compaction state is reconstructed correctly
+    {
+        let storage = RaftStorage::open(dir.path());
+        let p = storage
+            .load()
+            .expect("should have persisted state after compaction");
+
+        assert_eq!(p.log_offset, 3, "log_offset must equal snapshot boundary");
+
+        let snap = p
+            .snapshot
+            .expect("snapshot must be present after compaction");
+        assert_eq!(snap.last_included_index, 3);
+        assert_eq!(snap.last_included_term, 1);
+
+        assert_eq!(p.log.len(), 2, "only entries 4 and 5 should survive");
+        assert_eq!(p.log[0].index, 4);
+        assert_eq!(p.log[1].index, 5);
+    }
+}
+
 /// A `RaftNode` created with persisted state restores the saved term.
 #[tokio::test]
 async fn test_node_restores_term_after_restart() {

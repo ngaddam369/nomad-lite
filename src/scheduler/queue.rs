@@ -201,3 +201,140 @@ impl JobQueue {
         self.jobs.clear();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scheduler::job::{Job, JobStatus};
+    use chrono::Utc;
+    use uuid::Uuid;
+
+    #[test]
+    fn test_update_status_preserves_none_output() {
+        let mut queue = JobQueue::new();
+        let job = Job::new("echo hello".to_string());
+        let id = job.id;
+        queue.add_job(job);
+        // Set output via update_job_result
+        queue.update_job_result(
+            &id,
+            JobStatus::Running,
+            1,
+            None,
+            Some("hello".to_string()),
+            None,
+            Utc::now(),
+        );
+        // update_status with None should NOT overwrite existing output
+        queue.update_status(&id, JobStatus::Completed, None, None);
+        let job = queue.get_job(&id).unwrap();
+        assert_eq!(job.output, Some("hello".to_string()));
+    }
+
+    #[test]
+    fn test_update_status_overwrites_some_output() {
+        let mut queue = JobQueue::new();
+        let job = Job::new("test".to_string());
+        let id = job.id;
+        queue.add_job(job);
+        queue.update_status(
+            &id,
+            JobStatus::Completed,
+            Some("new".to_string()),
+            Some("err".to_string()),
+        );
+        let job = queue.get_job(&id).unwrap();
+        assert_eq!(job.output, Some("new".to_string()));
+        assert_eq!(job.error, Some("err".to_string()));
+    }
+
+    #[test]
+    fn test_update_status_nonexistent_returns_false() {
+        let mut queue = JobQueue::new();
+        let result = queue.update_status(&Uuid::new_v4(), JobStatus::Completed, None, None);
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_update_job_result_sets_all_fields() {
+        let mut queue = JobQueue::new();
+        let job = Job::new("test".to_string());
+        let id = job.id;
+        queue.add_job(job);
+        let now = Utc::now();
+        queue.update_job_result(
+            &id,
+            JobStatus::Completed,
+            2,
+            Some(0),
+            Some("out".to_string()),
+            None,
+            now,
+        );
+        let job = queue.get_job(&id).unwrap();
+        assert_eq!(job.status, JobStatus::Completed);
+        assert_eq!(job.executed_by, Some(2));
+        assert_eq!(job.exit_code, Some(0));
+        assert_eq!(job.output, Some("out".to_string()));
+        assert_eq!(job.error, None);
+    }
+
+    #[test]
+    fn test_update_status_metadata_does_not_touch_output() {
+        let mut queue = JobQueue::new();
+        let job = Job::new("test".to_string());
+        let id = job.id;
+        queue.add_job(job);
+        // Set output locally
+        queue.update_job_result(
+            &id,
+            JobStatus::Running,
+            1,
+            None,
+            Some("local output".to_string()),
+            None,
+            Utc::now(),
+        );
+        // Metadata update must not overwrite output
+        queue.update_status_metadata(&id, JobStatus::Completed, 1, Some(0), Some(Utc::now()));
+        let job = queue.get_job(&id).unwrap();
+        assert_eq!(job.output, Some("local output".to_string()));
+    }
+
+    #[test]
+    fn test_assign_job_sets_running_status() {
+        let mut queue = JobQueue::new();
+        let job = Job::new("test".to_string());
+        let id = job.id;
+        queue.add_job(job);
+        let result = queue.assign_job(&id, 2);
+        assert!(result);
+        let job = queue.get_job(&id).unwrap();
+        assert_eq!(job.status, JobStatus::Running);
+        assert_eq!(job.assigned_worker, Some(2));
+    }
+
+    #[test]
+    fn test_assign_job_nonexistent_returns_false() {
+        let mut queue = JobQueue::new();
+        assert!(!queue.assign_job(&Uuid::new_v4(), 1));
+    }
+
+    #[test]
+    fn test_jobs_assigned_to_filters_running_only() {
+        let mut queue = JobQueue::new();
+        let job1 = Job::new("cmd1".to_string());
+        let id1 = job1.id;
+        let job2 = Job::new("cmd2".to_string());
+        let id2 = job2.id;
+        queue.add_job(job1);
+        queue.add_job(job2);
+        queue.assign_job(&id1, 1);
+        queue.assign_job(&id2, 1);
+        // Complete job2 — only job1 should remain as Running
+        queue.update_status(&id2, JobStatus::Completed, None, None);
+        let assigned = queue.jobs_assigned_to(1);
+        assert_eq!(assigned.len(), 1);
+        assert_eq!(assigned[0].0, id1);
+    }
+}
