@@ -12,11 +12,15 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
+use tonic::transport::Endpoint;
 use tower_http::cors::{Any, CorsLayer};
 
+use crate::proto::scheduler_service_client::SchedulerServiceClient;
+use crate::proto::GetClusterStatusRequest;
 use crate::raft::node::RaftMessage;
 use crate::raft::{Command, RaftNode};
 use crate::scheduler::{Job, JobQueue, JobStatus};
+use crate::tls::TlsIdentity;
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -24,6 +28,14 @@ pub struct DashboardState {
     pub raft_node: Arc<RaftNode>,
     pub job_queue: Arc<RwLock<JobQueue>>,
     pub draining: Arc<AtomicBool>,
+    pub tls_identity: Option<TlsIdentity>,
+}
+
+#[derive(Serialize)]
+struct NodeInfoResponse {
+    node_id: u64,
+    address: String,
+    is_alive: bool,
 }
 
 #[derive(Serialize)]
@@ -35,6 +47,7 @@ struct ClusterStatusResponse {
     commit_index: u64,
     last_applied: u64,
     log_length: usize,
+    nodes: Vec<NodeInfoResponse>,
 }
 
 #[derive(Serialize)]
@@ -246,21 +259,129 @@ pub async fn index_handler() -> Html<&'static str> {
 }
 
 pub async fn cluster_status_handler(State(state): State<DashboardState>) -> impl IntoResponse {
-    let raft_state = state.raft_node.state.read().await;
+    let (node_id, role, current_term, leader_id, commit_index, last_applied, log_length, is_leader) = {
+        let s = state.raft_node.state.read().await;
+        let is_leader = s.role == crate::raft::RaftRole::Leader;
+        (
+            state.raft_node.id,
+            s.role.to_string(),
+            s.current_term,
+            if is_leader {
+                Some(state.raft_node.id)
+            } else {
+                s.leader_id
+            },
+            s.commit_index,
+            s.last_applied,
+            s.last_log_index() as usize,
+            is_leader,
+        )
+    }; // guard dropped here
+
+    let nodes = if is_leader {
+        // Leader: build authoritative node list from peer heartbeat data.
+        let peers_status = state.raft_node.get_peers_status().await;
+        let mut nodes = Vec::with_capacity(state.raft_node.peer_configs().len() + 1);
+        nodes.push(NodeInfoResponse {
+            node_id: state.raft_node.id,
+            address: state.raft_node.listen_addr().to_string(),
+            is_alive: true,
+        });
+        for peer in state.raft_node.peer_configs() {
+            let is_alive = peers_status.get(&peer.node_id).copied().unwrap_or(false);
+            nodes.push(NodeInfoResponse {
+                node_id: peer.node_id,
+                address: peer.addr.clone(),
+                is_alive,
+            });
+        }
+        nodes.sort_by_key(|n| n.node_id);
+        nodes
+    } else {
+        // Follower: forward to the leader for authoritative liveness data, then fall
+        // back to showing only self as alive if the leader is unreachable.
+        get_nodes_from_leader(&state).await.unwrap_or_else(|| {
+            let mut nodes = vec![NodeInfoResponse {
+                node_id: state.raft_node.id,
+                address: state.raft_node.listen_addr().to_string(),
+                is_alive: true,
+            }];
+            for peer in state.raft_node.peer_configs() {
+                nodes.push(NodeInfoResponse {
+                    node_id: peer.node_id,
+                    address: peer.addr.clone(),
+                    is_alive: false,
+                });
+            }
+            nodes.sort_by_key(|n| n.node_id);
+            nodes
+        })
+    };
 
     Json(ClusterStatusResponse {
-        node_id: state.raft_node.id,
-        role: raft_state.role.to_string(),
-        current_term: raft_state.current_term,
-        leader_id: if raft_state.role == crate::raft::RaftRole::Leader {
-            Some(state.raft_node.id)
-        } else {
-            raft_state.leader_id
-        },
-        commit_index: raft_state.commit_index,
-        last_applied: raft_state.last_applied,
-        log_length: raft_state.last_log_index() as usize,
+        node_id,
+        role,
+        current_term,
+        leader_id,
+        commit_index,
+        last_applied,
+        log_length,
+        nodes,
     })
+}
+
+/// Forward `GetClusterStatus` to the leader and convert the response into
+/// `NodeInfoResponse` entries. Returns `None` if the leader is unknown or
+/// unreachable (caller falls back to a degraded response).
+async fn get_nodes_from_leader(state: &DashboardState) -> Option<Vec<NodeInfoResponse>> {
+    let leader_id = state.raft_node.get_leader_id().await?;
+
+    let leader_addr = state
+        .raft_node
+        .peer_configs()
+        .iter()
+        .find(|p| p.node_id == leader_id)
+        .map(|p| p.addr.clone())?;
+
+    let uri = if state.tls_identity.is_some() {
+        format!("https://{}", leader_addr)
+    } else {
+        format!("http://{}", leader_addr)
+    };
+
+    let endpoint = Endpoint::from_shared(uri)
+        .ok()?
+        .timeout(std::time::Duration::from_secs(2));
+
+    let channel = if let Some(ref tls_identity) = state.tls_identity {
+        endpoint
+            .tls_config(tls_identity.client_tls_config())
+            .ok()?
+            .connect()
+            .await
+            .ok()?
+    } else {
+        endpoint.connect().await.ok()?
+    };
+
+    let mut client = SchedulerServiceClient::new(channel);
+    let resp = client
+        .get_cluster_status(GetClusterStatusRequest {})
+        .await
+        .ok()?;
+
+    let nodes = resp
+        .into_inner()
+        .nodes
+        .into_iter()
+        .map(|n| NodeInfoResponse {
+            node_id: n.node_id,
+            address: n.address,
+            is_alive: n.is_alive,
+        })
+        .collect();
+
+    Some(nodes)
 }
 
 pub async fn list_jobs_handler(State(state): State<DashboardState>) -> impl IntoResponse {

@@ -175,6 +175,7 @@ impl Node {
                 raft_node: self.raft_node.clone(),
                 job_queue: self.job_queue.clone(),
                 draining: self.draining.clone(),
+                tls_identity: self.tls_identity.clone(),
             };
             let dashboard_token = shutdown_token.clone();
             tokio::spawn(async move {

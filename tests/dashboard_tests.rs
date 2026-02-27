@@ -46,6 +46,7 @@ fn create_test_state() -> (
         raft_node: Arc::new(raft_node),
         job_queue: Arc::new(RwLock::new(JobQueue::new())),
         draining: Arc::new(AtomicBool::new(false)),
+        tls_identity: None,
     };
 
     (state, raft_rx)
@@ -276,6 +277,7 @@ async fn test_submit_job_queue_at_capacity() {
         raft_node: Arc::new(raft_node),
         job_queue,
         draining: Arc::new(AtomicBool::new(false)),
+        tls_identity: None,
     };
 
     // Fake Raft responder: immediately reply Ok(1) so the handler advances past Raft
@@ -431,6 +433,7 @@ async fn test_cancel_job_not_found() {
         raft_node: Arc::new(raft_node),
         job_queue: Arc::new(RwLock::new(JobQueue::new())),
         draining: Arc::new(AtomicBool::new(false)),
+        tls_identity: None,
     };
     let job_id = uuid::Uuid::new_v4();
     let app = create_test_app(state);
@@ -477,6 +480,7 @@ async fn test_cancel_job_already_terminal() {
         raft_node: Arc::new(raft_node),
         job_queue,
         draining: Arc::new(AtomicBool::new(false)),
+        tls_identity: None,
     };
     let app = create_test_app(state);
 
@@ -521,6 +525,7 @@ async fn test_cancel_pending_job_success() {
         raft_node: Arc::new(raft_node),
         job_queue,
         draining: Arc::new(AtomicBool::new(false)),
+        tls_identity: None,
     };
 
     // Fake Raft responder: immediately reply Ok(1)
@@ -572,6 +577,7 @@ async fn test_cancel_job_raft_commit_error() {
         raft_node: Arc::new(raft_node),
         job_queue,
         draining: Arc::new(AtomicBool::new(false)),
+        tls_identity: None,
     };
 
     // Fake Raft responder: reply with an error
@@ -604,6 +610,61 @@ async fn test_cancel_job_raft_commit_error() {
         .as_str()
         .unwrap()
         .contains("simulated Raft error"));
+}
+
+// ── cluster status nodes field tests ─────────────────────────────────────────
+
+#[tokio::test]
+async fn test_cluster_status_includes_nodes_field() {
+    let (state, _rx) = create_test_state();
+    let app = create_test_app(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/cluster")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+
+    assert!(json["nodes"].is_array(), "nodes must be a non-null array");
+}
+
+#[tokio::test]
+async fn test_cluster_status_self_node_is_alive() {
+    let (state, _rx) = create_test_state();
+    let app = create_test_app(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/cluster")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+
+    let nodes = json["nodes"].as_array().unwrap();
+    assert_eq!(
+        nodes.len(),
+        1,
+        "single-node config should have exactly one node entry"
+    );
+    assert_eq!(nodes[0]["node_id"], 1);
+    assert_eq!(nodes[0]["is_alive"], true);
 }
 
 // ── health check tests ────────────────────────────────────────────────────────
@@ -685,6 +746,7 @@ async fn test_ready_returns_200_when_leader_known() {
         raft_node: Arc::new(raft_node),
         job_queue: Arc::new(RwLock::new(JobQueue::new())),
         draining: Arc::new(AtomicBool::new(false)),
+        tls_identity: None,
     };
     let app = create_test_app(state);
 

@@ -38,6 +38,13 @@
         .status-completed { color: #3fb950; }
         .status-failed { color: #f85149; }
         .status-cancelled { color: #8b949e; }
+        .nodes-section { margin-top: 12px; }
+        .nodes-header  { font-size: 0.85rem; font-weight: 600; color: #8b949e; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; }
+        .nodes-table   { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+        .nodes-table th, .nodes-table td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #30363d; }
+        .nodes-table th { color: #8b949e; font-weight: 600; }
+        .node-alive    { color: #3fb950; font-weight: 600; }
+        .node-dead     { color: #f85149; font-weight: 600; }
         .submit-form { display: flex; gap: 10px; margin-bottom: 20px; }
         input[type="text"] {
             flex: 1;
@@ -139,6 +146,23 @@
                         <span class="status-label">Log Length</span>
                         <span class="status-value">${data.log_length}</span>
                     </div>
+                    ${data.nodes && data.nodes.length > 0 ? `
+                    <div class="nodes-section">
+                        <div class="nodes-header">Nodes</div>
+                        <table class="nodes-table">
+                            <thead><tr><th>ID</th><th>Address</th><th>Status</th></tr></thead>
+                            <tbody>
+                                ${data.nodes.map(n => `
+                                    <tr>
+                                        <td>${n.node_id}</td>
+                                        <td>${n.address}</td>
+                                        <td><span class="node-status ${n.is_alive ? 'node-alive' : 'node-dead'}">${n.is_alive ? 'alive' : 'dead'}</span></td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                    ` : ''}
                 `;
             } catch (e) {
                 document.getElementById('cluster-status').innerHTML = '<div class="error">Failed to load</div>';

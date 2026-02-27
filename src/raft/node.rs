@@ -166,6 +166,11 @@ impl RaftNode {
         &self.config.peers
     }
 
+    /// Get the listen address for this node
+    pub fn listen_addr(&self) -> std::net::SocketAddr {
+        self.config.listen_addr
+    }
+
     /// Subscribe to commit index updates. Returns a receiver that gets notified
     /// when new entries are committed.
     pub fn subscribe_commits(&self) -> watch::Receiver<u64> {

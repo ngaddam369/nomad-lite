@@ -16,7 +16,12 @@ curl http://localhost:8081/api/cluster
 #   "leader_id": 1,
 #   "commit_index": 3,
 #   "last_applied": 3,
-#   "log_length": 3
+#   "log_length": 3,
+#   "nodes": [
+#     { "node_id": 1, "address": "0.0.0.0:50051", "is_alive": true },
+#     { "node_id": 2, "address": "127.0.0.1:50052", "is_alive": true },
+#     { "node_id": 3, "address": "127.0.0.1:50053", "is_alive": false }
+#   ]
 # }
 ```
 
