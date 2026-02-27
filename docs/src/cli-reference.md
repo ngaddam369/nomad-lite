@@ -195,11 +195,15 @@ nomad-lite log -o json list
 
 ## Automatic Leader Redirect
 
-For local clusters (non-Docker), the CLI automatically redirects to the leader if you connect to a follower:
+For local clusters (non-Docker), the CLI automatically redirects to the leader if you connect to a follower. This works for both `submit` and `cancel`:
 
 ```bash
 # Connect to follower node (port 50052), CLI auto-redirects to leader
 nomad-lite job -a http://127.0.0.1:50052 submit "echo hello"
-# Redirecting to leader at 127.0.0.1:50051...
+# Redirecting to leader at http://127.0.0.1:50051...
 # Job submitted successfully!
+
+nomad-lite job -a http://127.0.0.1:50052 cancel <job-id>
+# Redirecting to leader at http://127.0.0.1:50051...
+# job <job-id> cancelled
 ```

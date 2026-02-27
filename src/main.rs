@@ -381,6 +381,39 @@ async fn create_channel_with_tls(
     }
 }
 
+/// Parse the leader's network address from a not-leader error message.
+///
+/// The server embeds the address in messages of the form
+/// `"Not the leader. Try <addr>"`. Returns `Some(addr)` on success so the
+/// CLI can redirect without an extra RPC.
+fn leader_addr_from_error(msg: &str) -> Option<&str> {
+    msg.strip_prefix("Not the leader. Try ")
+}
+
+/// Resolve the full leader URL for redirect.
+///
+/// First tries to parse the address from the error message (fast path, no
+/// extra RPC). Falls back to a `get_cluster_status` query when the error
+/// message doesn't embed an address.
+async fn resolve_leader_url(
+    msg: &str,
+    client: &mut SchedulerServiceClient<Channel>,
+    client_args: &ClientArgs,
+) -> Option<String> {
+    let scheme = if client_args.addr.starts_with("https://") {
+        "https://"
+    } else {
+        "http://"
+    };
+    if let Some(addr) = leader_addr_from_error(msg) {
+        return Some(format!("{}{}", scheme, addr));
+    }
+    if let Ok(Some(addr)) = find_leader_addr(client, &client_args.addr).await {
+        return Some(format!("{}{}", scheme, addr));
+    }
+    None
+}
+
 /// Find the leader's address by querying cluster status
 /// Returns (leader_address, leader_id) if found
 async fn find_leader_addr(
@@ -552,21 +585,11 @@ async fn handle_job_submit(
             }
         }
         Err(status) => {
-            let msg = status.message();
-            // Check if this is a "not the leader" error
+            let msg = status.message().to_owned();
+            // Check if this is a "not the leader" error and try to redirect
             if msg.contains("Not the leader") {
-                // Try to find the leader and redirect
-                if let Ok(Some(leader_addr)) = find_leader_addr(client, &client_args.addr).await {
-                    let scheme = if client_args.addr.starts_with("https://") {
-                        "https://"
-                    } else {
-                        "http://"
-                    };
-                    let leader_url = format!("{}{}", scheme, leader_addr);
-
-                    eprintln!("Redirecting to leader at {}...", leader_addr);
-
-                    // Create new connection to leader
+                if let Some(leader_url) = resolve_leader_url(&msg, client, client_args).await {
+                    eprintln!("Redirecting to leader at {}...", leader_url);
                     let channel = create_channel_with_tls(
                         &leader_url,
                         &client_args.ca_cert,
@@ -575,8 +598,6 @@ async fn handle_job_submit(
                     )
                     .await?;
                     let mut leader_client = SchedulerServiceClient::new(channel);
-
-                    // Retry the request
                     match leader_client
                         .submit_job(SubmitJobRequest { command: cmd })
                         .await
@@ -625,30 +646,72 @@ async fn handle_job_cancel(
     client: &mut SchedulerServiceClient<Channel>,
     job_id: String,
     output_format: &OutputFormat,
+    client_args: &ClientArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let response = client
-        .cancel_job(CancelJobRequest { job_id })
-        .await?
-        .into_inner();
+    #[derive(Serialize)]
+    struct CancelOutput {
+        success: bool,
+        message: String,
+    }
 
-    match output_format {
-        OutputFormat::Json => {
-            #[derive(Serialize)]
-            struct CancelOutput {
-                success: bool,
-                message: String,
+    let print_response = |resp: nomad_lite::proto::CancelJobResponse,
+                          fmt: &OutputFormat|
+     -> Result<(), Box<dyn std::error::Error>> {
+        match fmt {
+            OutputFormat::Json => {
+                let output = CancelOutput {
+                    success: resp.success,
+                    message: resp.message.clone(),
+                };
+                println!("{}", serde_json::to_string_pretty(&output)?);
             }
-            let output = CancelOutput {
-                success: response.success,
-                message: response.message.clone(),
-            };
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            OutputFormat::Table => {
+                if resp.success {
+                    println!("{}", resp.message);
+                } else {
+                    eprintln!("Cancel failed: {}", resp.message);
+                    std::process::exit(1);
+                }
+            }
         }
-        OutputFormat::Table => {
-            if response.success {
-                println!("{}", response.message);
+        Ok(())
+    };
+
+    match client
+        .cancel_job(CancelJobRequest {
+            job_id: job_id.clone(),
+        })
+        .await
+    {
+        Ok(response) => print_response(response.into_inner(), output_format)?,
+        Err(status) => {
+            let msg = status.message().to_owned();
+            if msg.contains("Not the leader") {
+                if let Some(leader_url) = resolve_leader_url(&msg, client, client_args).await {
+                    eprintln!("Redirecting to leader at {}...", leader_url);
+                    let channel = create_channel_with_tls(
+                        &leader_url,
+                        &client_args.ca_cert,
+                        &client_args.cert,
+                        &client_args.key,
+                    )
+                    .await?;
+                    let mut leader_client = SchedulerServiceClient::new(channel);
+                    match leader_client.cancel_job(CancelJobRequest { job_id }).await {
+                        Ok(response) => print_response(response.into_inner(), output_format)?,
+                        Err(e) => {
+                            eprintln!("Error: Cancel failed after redirect: {}", e.message());
+                            std::process::exit(1);
+                        }
+                    }
+                } else {
+                    eprintln!("Error: {}", msg);
+                    eprintln!("Hint: Use -a to specify the leader's address, e.g.:");
+                    eprintln!("  nomad-lite -a http://<leader-ip>:<port> job cancel ...");
+                    std::process::exit(1);
+                }
             } else {
-                eprintln!("Cancel failed: {}", response.message);
+                eprintln!("Error: Cancel failed: {}", msg);
                 std::process::exit(1);
             }
         }
@@ -1083,7 +1146,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     handle_job_status(&mut grpc_client, job_id, &client.output).await?;
                 }
                 JobCommands::Cancel { job_id } => {
-                    handle_job_cancel(&mut grpc_client, job_id, &client.output).await?;
+                    handle_job_cancel(&mut grpc_client, job_id, &client.output, &client).await?;
                 }
                 JobCommands::List {
                     stream,

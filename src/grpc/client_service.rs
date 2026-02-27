@@ -138,6 +138,29 @@ impl ClientService {
         Ok(client)
     }
 
+    /// Returns a not-leader Status with the leader's network address when known.
+    ///
+    /// The message format is always `"Not the leader. Try <addr>"` or
+    /// `"Not the leader. Leader unknown, retry later"`, which the CLI client
+    /// parses to perform automatic redirect without an extra RPC.
+    async fn not_leader_status(&self) -> Status {
+        let leader_id = self.raft_node.get_leader_id().await;
+        let message = match leader_id {
+            Some(id) => {
+                let addr = self
+                    .config
+                    .peers
+                    .iter()
+                    .find(|p| p.node_id == id)
+                    .map(|p| p.addr.as_str())
+                    .unwrap_or("unknown address");
+                format!("Not the leader. Try {}", addr)
+            }
+            None => "Not the leader. Leader unknown, retry later".to_string(),
+        };
+        Status::failed_precondition(message)
+    }
+
     /// Fetch job output from the node that executed it
     async fn fetch_output_from_node(
         &self,
@@ -186,12 +209,7 @@ impl SchedulerService for ClientService {
 
         // Check if we're the leader
         if !self.raft_node.is_leader().await {
-            let leader = self.raft_node.get_leader_id().await;
-            let message = match leader {
-                Some(id) => format!("Not the leader. Redirect to node {}", id),
-                None => "Not the leader. Leader unknown, retry later".to_string(),
-            };
-            return Err(Status::failed_precondition(message));
+            return Err(self.not_leader_status().await);
         }
 
         // Reject before touching Raft — avoids orphaned committed log entries
@@ -260,11 +278,7 @@ impl SchedulerService for ClientService {
             Uuid::parse_str(&req.job_id).map_err(|_| Status::invalid_argument("invalid job_id"))?;
 
         if !self.raft_node.is_leader().await {
-            let leader = self.raft_node.get_leader_id().await;
-            return Err(Status::failed_precondition(format!(
-                "not the leader; leader is node {:?}",
-                leader
-            )));
+            return Err(self.not_leader_status().await);
         }
 
         {
