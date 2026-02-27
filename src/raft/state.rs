@@ -79,6 +79,8 @@ pub enum Command {
     RegisterWorker { worker_id: u64 },
     /// Assign a job to a specific worker (replicated so all nodes update their queues)
     AssignJob { job_id: Uuid, worker_id: u64 },
+    /// Cancel a pending or running job
+    CancelJob { job_id: Uuid },
     /// No-op command (used for leader commit)
     Noop,
 }

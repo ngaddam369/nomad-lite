@@ -10,8 +10,9 @@ use nomad_lite::config::{NodeConfig, PeerConfig, SandboxConfig, TlsConfig};
 use nomad_lite::node::Node;
 use nomad_lite::proto::scheduler_service_client::SchedulerServiceClient;
 use nomad_lite::proto::{
-    DrainNodeRequest, GetClusterStatusRequest, GetJobStatusRequest, GetRaftLogEntriesRequest,
-    JobStatus, ListJobsRequest, StreamJobsRequest, SubmitJobRequest, TransferLeadershipRequest,
+    CancelJobRequest, DrainNodeRequest, GetClusterStatusRequest, GetJobStatusRequest,
+    GetRaftLogEntriesRequest, JobStatus, ListJobsRequest, StreamJobsRequest, SubmitJobRequest,
+    TransferLeadershipRequest,
 };
 use nomad_lite::tls::TlsIdentity;
 
@@ -163,6 +164,11 @@ enum JobCommands {
         /// The job ID (UUID)
         job_id: String,
     },
+    /// Cancel a pending or running job
+    Cancel {
+        /// The job ID to cancel (UUID)
+        job_id: String,
+    },
     /// List all jobs
     List {
         /// Use streaming API (memory-efficient for large job lists)
@@ -308,6 +314,7 @@ fn job_status_to_string(status: i32) -> String {
         Ok(JobStatus::Running) => "RUNNING".to_string(),
         Ok(JobStatus::Completed) => "COMPLETED".to_string(),
         Ok(JobStatus::Failed) => "FAILED".to_string(),
+        Ok(JobStatus::Cancelled) => "CANCELLED".to_string(),
         _ => "UNKNOWN".to_string(),
     }
 }
@@ -607,6 +614,41 @@ async fn handle_job_submit(
                 }
             } else {
                 eprintln!("Error: Job submission failed: {}", msg);
+                std::process::exit(1);
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn handle_job_cancel(
+    client: &mut SchedulerServiceClient<Channel>,
+    job_id: String,
+    output_format: &OutputFormat,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let response = client
+        .cancel_job(CancelJobRequest { job_id })
+        .await?
+        .into_inner();
+
+    match output_format {
+        OutputFormat::Json => {
+            #[derive(Serialize)]
+            struct CancelOutput {
+                success: bool,
+                message: String,
+            }
+            let output = CancelOutput {
+                success: response.success,
+                message: response.message.clone(),
+            };
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+        OutputFormat::Table => {
+            if response.success {
+                println!("{}", response.message);
+            } else {
+                eprintln!("Cancel failed: {}", response.message);
                 std::process::exit(1);
             }
         }
@@ -1010,6 +1052,7 @@ fn format_command(command: &Option<nomad_lite::proto::Command>) -> (String, Stri
                 "AssignJob".to_string(),
                 format!("job_id={}, worker_id={}", assign.job_id, assign.worker_id),
             ),
+            Some(CommandType::CancelJob(c)) => ("CancelJob".to_string(), c.job_id.clone()),
             None => ("Noop".to_string(), String::new()),
         },
         None => ("Noop".to_string(), String::new()),
@@ -1038,6 +1081,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 JobCommands::Status { job_id } => {
                     handle_job_status(&mut grpc_client, job_id, &client.output).await?;
+                }
+                JobCommands::Cancel { job_id } => {
+                    handle_job_cancel(&mut grpc_client, job_id, &client.output).await?;
                 }
                 JobCommands::List {
                     stream,

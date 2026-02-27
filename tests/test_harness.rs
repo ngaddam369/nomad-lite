@@ -281,6 +281,9 @@ impl TestCluster {
                         job_assigner.write().await.register_worker(worker_id);
                         should_assign = true;
                     }
+                    Command::CancelJob { job_id } => {
+                        job_queue.write().await.cancel_job(&job_id);
+                    }
                     Command::Noop => {}
                 }
             }

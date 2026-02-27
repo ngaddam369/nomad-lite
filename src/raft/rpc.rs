@@ -207,6 +207,9 @@ fn proto_to_log_entry(proto: &ProtoLogEntry) -> Option<LogEntry> {
                     .ok()?;
                 Command::BatchUpdateJobStatus { updates }
             }
+            Some(crate::proto::command::CommandType::CancelJob(c)) => Command::CancelJob {
+                job_id: Uuid::parse_str(&c.job_id).ok()?,
+            },
             None => Command::Noop,
         },
         None => Command::Noop,
@@ -283,6 +286,11 @@ pub fn log_entry_to_proto(entry: &LogEntry) -> ProtoLogEntry {
                 worker_id: *worker_id,
             })),
         }),
+        Command::CancelJob { job_id } => Some(ProtoCommand {
+            command_type: Some(CommandType::CancelJob(crate::proto::CancelJobCommand {
+                job_id: job_id.to_string(),
+            })),
+        }),
         Command::Noop => None,
     };
 
@@ -304,6 +312,7 @@ pub(crate) fn proto_status_to_internal(status: crate::proto::JobStatus) -> JobSt
         crate::proto::JobStatus::Running => JobStatus::Running,
         crate::proto::JobStatus::Completed => JobStatus::Completed,
         crate::proto::JobStatus::Failed => JobStatus::Failed,
+        crate::proto::JobStatus::Cancelled => JobStatus::Cancelled,
         crate::proto::JobStatus::Unspecified => JobStatus::Pending,
     }
 }
@@ -314,6 +323,7 @@ fn internal_status_to_proto(status: &JobStatus) -> crate::proto::JobStatus {
         JobStatus::Running => crate::proto::JobStatus::Running,
         JobStatus::Completed => crate::proto::JobStatus::Completed,
         JobStatus::Failed => crate::proto::JobStatus::Failed,
+        JobStatus::Cancelled => crate::proto::JobStatus::Cancelled,
     }
 }
 
@@ -398,8 +408,8 @@ pub fn snapshot_job_to_proto(job: &SnapshotJob) -> crate::proto::SnapshotJob {
 mod tests {
     use super::*;
     use crate::proto::{
-        command::CommandType, Command as ProtoCommand, RegisterWorkerCommand, SubmitJobCommand,
-        UpdateJobStatusCommand,
+        command::CommandType, CancelJobCommand, Command as ProtoCommand, RegisterWorkerCommand,
+        SubmitJobCommand, UpdateJobStatusCommand,
     };
 
     /// Test log_entry_to_proto for SubmitJob command.
@@ -782,7 +792,82 @@ mod tests {
         }
     }
 
-    /// Test status conversion functions.
+    /// Test log_entry_to_proto for CancelJob command.
+    #[test]
+    fn test_log_entry_to_proto_cancel_job() {
+        let job_id = Uuid::new_v4();
+        let entry = LogEntry {
+            term: 2,
+            index: 7,
+            command: Command::CancelJob { job_id },
+        };
+
+        let proto = log_entry_to_proto(&entry);
+
+        assert_eq!(proto.term, 2);
+        assert_eq!(proto.index, 7);
+        assert!(proto.command.is_some());
+
+        if let Some(cmd) = proto.command {
+            if let Some(CommandType::CancelJob(cancel)) = cmd.command_type {
+                assert_eq!(cancel.job_id, job_id.to_string());
+            } else {
+                panic!("Expected CancelJob command type");
+            }
+        }
+    }
+
+    /// Test proto_to_log_entry for CancelJob command.
+    #[test]
+    fn test_proto_to_log_entry_cancel_job() {
+        let job_id = Uuid::new_v4();
+        let proto = ProtoLogEntry {
+            term: 2,
+            index: 7,
+            command: Some(ProtoCommand {
+                command_type: Some(CommandType::CancelJob(CancelJobCommand {
+                    job_id: job_id.to_string(),
+                })),
+            }),
+        };
+
+        let entry = proto_to_log_entry(&proto).unwrap();
+
+        assert_eq!(entry.term, 2);
+        assert_eq!(entry.index, 7);
+        if let Command::CancelJob { job_id: parsed_id } = entry.command {
+            assert_eq!(parsed_id, job_id);
+        } else {
+            panic!("Expected CancelJob command");
+        }
+    }
+
+    /// Test roundtrip conversion for CancelJob.
+    #[test]
+    fn test_roundtrip_cancel_job() {
+        let job_id = Uuid::new_v4();
+        let original = LogEntry {
+            term: 3,
+            index: 9,
+            command: Command::CancelJob { job_id },
+        };
+
+        let proto = log_entry_to_proto(&original);
+        let recovered = proto_to_log_entry(&proto).unwrap();
+
+        assert_eq!(recovered.term, original.term);
+        assert_eq!(recovered.index, original.index);
+        if let Command::CancelJob {
+            job_id: recovered_id,
+        } = recovered.command
+        {
+            assert_eq!(recovered_id, job_id);
+        } else {
+            panic!("Expected CancelJob command after roundtrip");
+        }
+    }
+
+    /// Test status conversion functions (including Cancelled).
     #[test]
     fn test_status_conversion_roundtrip() {
         let statuses = [
@@ -790,6 +875,7 @@ mod tests {
             JobStatus::Running,
             JobStatus::Completed,
             JobStatus::Failed,
+            JobStatus::Cancelled,
         ];
 
         for status in statuses {

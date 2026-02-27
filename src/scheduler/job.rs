@@ -10,6 +10,7 @@ pub enum JobStatus {
     Running,
     Completed,
     Failed,
+    Cancelled,
 }
 
 impl std::fmt::Display for JobStatus {
@@ -19,6 +20,7 @@ impl std::fmt::Display for JobStatus {
             JobStatus::Running => write!(f, "running"),
             JobStatus::Completed => write!(f, "completed"),
             JobStatus::Failed => write!(f, "failed"),
+            JobStatus::Cancelled => write!(f, "cancelled"),
         }
     }
 }

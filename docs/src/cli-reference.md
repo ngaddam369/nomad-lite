@@ -8,6 +8,7 @@ nomad-lite
 ├── job                           # Job management
 │   ├── submit <COMMAND>         # Submit a new job
 │   ├── status <JOB_ID>          # Get job status
+│   ├── cancel <JOB_ID>          # Cancel a pending or running job
 │   └── list                     # List all jobs
 ├── cluster                       # Cluster management
 │   ├── status                   # Get cluster info
@@ -64,6 +65,20 @@ nomad-lite job status ef319e40-c888-490d-8349-e9c05f78cf5a
 # Executed By:     1
 # Output:
 #   hello
+```
+
+**Cancel a job:**
+
+```bash
+nomad-lite job cancel ef319e40-c888-490d-8349-e9c05f78cf5a
+# job ef319e40-c888-490d-8349-e9c05f78cf5a cancelled
+```
+
+Cancelling a job that is already terminal returns an error:
+
+```bash
+nomad-lite job cancel ef319e40-c888-490d-8349-e9c05f78cf5a
+# Error: job is already completed
 ```
 
 **List all jobs:**

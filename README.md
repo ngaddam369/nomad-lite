@@ -31,6 +31,9 @@ nomad-lite job submit "echo hello"
 
 # Check job status
 nomad-lite job status <job-id>
+
+# Cancel a pending or running job
+nomad-lite job cancel <job-id>
 ```
 
 ## Documentation

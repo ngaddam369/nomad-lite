@@ -149,6 +149,19 @@ impl JobQueue {
         }
     }
 
+    /// Cancel a pending or running job. Returns true if the job was found and
+    /// was in a cancellable state (Pending or Running).
+    pub fn cancel_job(&mut self, id: &Uuid) -> bool {
+        if let Some(job) = self.jobs.get_mut(id) {
+            if matches!(job.status, JobStatus::Pending | JobStatus::Running) {
+                job.status = JobStatus::Cancelled;
+                job.completed_at = Some(Utc::now());
+                return true;
+            }
+        }
+        false
+    }
+
     /// Get all pending jobs
     pub fn pending_jobs(&self) -> Vec<&Job> {
         self.jobs
@@ -196,7 +209,7 @@ impl JobQueue {
         let before = self.jobs.len();
         let cutoff = Utc::now() - chrono::Duration::seconds(retention_secs as i64);
         self.jobs.retain(|_, job| match job.status {
-            JobStatus::Completed | JobStatus::Failed => {
+            JobStatus::Completed | JobStatus::Failed | JobStatus::Cancelled => {
                 // Keep if completed recently; retain if timestamp is missing.
                 job.completed_at.is_none_or(|t| t > cutoff)
             }
@@ -361,5 +374,131 @@ mod tests {
         let assigned = queue.jobs_assigned_to(1);
         assert_eq!(assigned.len(), 1);
         assert_eq!(assigned[0].0, id1);
+    }
+
+    #[test]
+    fn test_cancel_pending_job() {
+        let mut queue = JobQueue::new();
+        let job = Job::new("echo hello".to_string());
+        let id = job.id;
+        queue.add_job(job);
+        assert_eq!(queue.get_job(&id).unwrap().status, JobStatus::Pending);
+
+        let result = queue.cancel_job(&id);
+        assert!(result);
+
+        let job = queue.get_job(&id).unwrap();
+        assert_eq!(job.status, JobStatus::Cancelled);
+        assert!(
+            job.completed_at.is_some(),
+            "completed_at must be set on cancel"
+        );
+    }
+
+    #[test]
+    fn test_cancel_running_job() {
+        let mut queue = JobQueue::new();
+        let job = Job::new("sleep 30".to_string());
+        let id = job.id;
+        queue.add_job(job);
+        queue.assign_job(&id, 1);
+        assert_eq!(queue.get_job(&id).unwrap().status, JobStatus::Running);
+
+        let result = queue.cancel_job(&id);
+        assert!(result);
+        assert_eq!(queue.get_job(&id).unwrap().status, JobStatus::Cancelled);
+    }
+
+    #[test]
+    fn test_cancel_completed_returns_false() {
+        let mut queue = JobQueue::new();
+        let job = Job::new("echo hello".to_string());
+        let id = job.id;
+        queue.add_job(job);
+        queue.update_status(&id, JobStatus::Completed, None, None);
+
+        assert!(!queue.cancel_job(&id));
+        assert_eq!(queue.get_job(&id).unwrap().status, JobStatus::Completed);
+    }
+
+    #[test]
+    fn test_cancel_failed_returns_false() {
+        let mut queue = JobQueue::new();
+        let job = Job::new("false".to_string());
+        let id = job.id;
+        queue.add_job(job);
+        queue.update_status(&id, JobStatus::Failed, None, None);
+
+        assert!(!queue.cancel_job(&id));
+        assert_eq!(queue.get_job(&id).unwrap().status, JobStatus::Failed);
+    }
+
+    #[test]
+    fn test_cancel_already_cancelled_is_idempotent() {
+        let mut queue = JobQueue::new();
+        let job = Job::new("echo hello".to_string());
+        let id = job.id;
+        queue.add_job(job);
+
+        assert!(queue.cancel_job(&id)); // first cancel succeeds
+        assert!(!queue.cancel_job(&id)); // second returns false — already terminal
+        assert_eq!(queue.get_job(&id).unwrap().status, JobStatus::Cancelled);
+    }
+
+    #[test]
+    fn test_cancel_nonexistent_returns_false() {
+        let mut queue = JobQueue::new();
+        assert!(!queue.cancel_job(&Uuid::new_v4()));
+    }
+
+    #[test]
+    fn test_cancelled_does_not_count_toward_capacity() {
+        let mut queue = JobQueue::with_capacity(1);
+        let job = Job::new("echo hello".to_string());
+        let id = job.id;
+        queue.add_job(job);
+        assert!(queue.is_full(), "queue should be full with one pending job");
+
+        // Cancelling frees the capacity slot
+        assert!(queue.cancel_job(&id));
+        assert!(
+            !queue.is_full(),
+            "cancelled job must not count toward capacity"
+        );
+
+        // A new job can now be admitted
+        assert!(queue.add_job(Job::new("echo world".to_string())));
+    }
+
+    #[test]
+    fn test_cleanup_evicts_old_cancelled_job() {
+        let mut queue = JobQueue::new();
+        let job = Job::new("echo hello".to_string());
+        let id = job.id;
+        queue.add_job(job);
+        assert!(queue.cancel_job(&id));
+
+        // Backdate completed_at to 2 minutes ago so it falls outside a 60s window
+        if let Some(j) = queue.get_job_mut(&id) {
+            j.completed_at = Some(Utc::now() - chrono::Duration::seconds(120));
+        }
+
+        let removed = queue.cleanup_finished_jobs(60);
+        assert_eq!(removed, 1);
+        assert!(queue.get_job(&id).is_none());
+    }
+
+    #[test]
+    fn test_cleanup_retains_recently_cancelled_job() {
+        let mut queue = JobQueue::new();
+        let job = Job::new("echo hello".to_string());
+        let id = job.id;
+        queue.add_job(job);
+        assert!(queue.cancel_job(&id));
+        // completed_at is set to now by cancel_job; well within any retention window
+
+        let removed = queue.cleanup_finished_jobs(3600);
+        assert_eq!(removed, 0);
+        assert!(queue.get_job(&id).is_some());
     }
 }

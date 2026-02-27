@@ -1,7 +1,7 @@
 use axum::{
     body::Body,
     http::{Request, StatusCode},
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use http_body_util::BodyExt;
@@ -13,7 +13,8 @@ use tower::ServiceExt;
 
 use nomad_lite::config::NodeConfig;
 use nomad_lite::dashboard::{
-    cluster_status_handler, index_handler, list_jobs_handler, submit_job_handler, DashboardState,
+    cancel_job_handler, cluster_status_handler, index_handler, list_jobs_handler,
+    submit_job_handler, DashboardState,
 };
 use nomad_lite::raft::node::RaftMessage;
 use nomad_lite::raft::state::RaftRole;
@@ -27,6 +28,7 @@ fn create_test_app(state: DashboardState) -> Router {
         .route("/api/cluster", get(cluster_status_handler))
         .route("/api/jobs", get(list_jobs_handler))
         .route("/api/jobs", post(submit_job_handler))
+        .route("/api/jobs/:id", delete(cancel_job_handler))
         .with_state(state)
 }
 
@@ -359,4 +361,245 @@ async fn test_submit_job_rejected_when_not_leader() {
     let json: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(json["success"], false);
     assert!(json["error"].as_str().unwrap().contains("Not the leader"));
+}
+
+// ── cancel_job_handler tests ─────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_cancel_job_invalid_uuid() {
+    let (state, _rx) = create_test_state();
+    let app = create_test_app(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/jobs/not-a-valid-uuid")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["success"], false);
+    assert!(json["error"].as_str().unwrap().contains("invalid job id"));
+}
+
+#[tokio::test]
+async fn test_cancel_job_rejected_when_not_leader() {
+    let (state, _rx) = create_test_state();
+    // Fresh node is a follower
+    let job_id = uuid::Uuid::new_v4();
+    let app = create_test_app(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/jobs/{}", job_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["success"], false);
+    assert!(json["error"].as_str().unwrap().contains("not the leader"));
+}
+
+#[tokio::test]
+async fn test_cancel_job_not_found() {
+    let config = NodeConfig::default();
+    let (raft_node, _raft_rx) = RaftNode::new(config, None);
+
+    // Force leader so we reach the job-lookup
+    {
+        let mut state = raft_node.state.write().await;
+        state.role = RaftRole::Leader;
+        state.leader_id = Some(1);
+    }
+
+    let state = DashboardState {
+        raft_node: Arc::new(raft_node),
+        job_queue: Arc::new(RwLock::new(JobQueue::new())),
+        draining: Arc::new(AtomicBool::new(false)),
+    };
+    let job_id = uuid::Uuid::new_v4();
+    let app = create_test_app(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/jobs/{}", job_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["success"], false);
+    assert!(json["error"].as_str().unwrap().contains("job not found"));
+}
+
+#[tokio::test]
+async fn test_cancel_job_already_terminal() {
+    let config = NodeConfig::default();
+    let (raft_node, _raft_rx) = RaftNode::new(config, None);
+
+    {
+        let mut state = raft_node.state.write().await;
+        state.role = RaftRole::Leader;
+        state.leader_id = Some(1);
+    }
+
+    let job = Job::new("echo hello".to_string());
+    let job_id = job.id;
+    let job_queue = Arc::new(RwLock::new(JobQueue::new()));
+    {
+        let mut queue = job_queue.write().await;
+        queue.add_job(job);
+        queue.update_status(&job_id, JobStatus::Completed, None, None);
+    }
+
+    let state = DashboardState {
+        raft_node: Arc::new(raft_node),
+        job_queue,
+        draining: Arc::new(AtomicBool::new(false)),
+    };
+    let app = create_test_app(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/jobs/{}", job_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["success"], false);
+    assert!(json["error"]
+        .as_str()
+        .unwrap()
+        .contains("job is already completed"));
+}
+
+#[tokio::test]
+async fn test_cancel_pending_job_success() {
+    let config = NodeConfig::default();
+    let (raft_node, mut raft_rx) = RaftNode::new(config, None);
+
+    {
+        let mut state = raft_node.state.write().await;
+        state.role = RaftRole::Leader;
+        state.leader_id = Some(1);
+    }
+
+    let job = Job::new("echo hello".to_string());
+    let job_id = job.id;
+    let job_queue = Arc::new(RwLock::new(JobQueue::new()));
+    job_queue.write().await.add_job(job);
+
+    let state = DashboardState {
+        raft_node: Arc::new(raft_node),
+        job_queue,
+        draining: Arc::new(AtomicBool::new(false)),
+    };
+
+    // Fake Raft responder: immediately reply Ok(1)
+    tokio::spawn(async move {
+        while let Some(msg) = raft_rx.recv().await {
+            if let RaftMessage::AppendCommand { response_tx, .. } = msg {
+                let _ = response_tx.send(Ok(1));
+            }
+        }
+    });
+
+    let app = create_test_app(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/jobs/{}", job_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["success"], true);
+    assert!(json["error"].is_null());
+}
+
+#[tokio::test]
+async fn test_cancel_job_raft_commit_error() {
+    let config = NodeConfig::default();
+    let (raft_node, mut raft_rx) = RaftNode::new(config, None);
+
+    {
+        let mut state = raft_node.state.write().await;
+        state.role = RaftRole::Leader;
+        state.leader_id = Some(1);
+    }
+
+    let job = Job::new("echo hello".to_string());
+    let job_id = job.id;
+    let job_queue = Arc::new(RwLock::new(JobQueue::new()));
+    job_queue.write().await.add_job(job);
+
+    let state = DashboardState {
+        raft_node: Arc::new(raft_node),
+        job_queue,
+        draining: Arc::new(AtomicBool::new(false)),
+    };
+
+    // Fake Raft responder: reply with an error
+    tokio::spawn(async move {
+        while let Some(msg) = raft_rx.recv().await {
+            if let RaftMessage::AppendCommand { response_tx, .. } = msg {
+                let _ = response_tx.send(Err("simulated Raft error".to_string()));
+            }
+        }
+    });
+
+    let app = create_test_app(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/jobs/{}", job_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["success"], false);
+    assert!(json["error"]
+        .as_str()
+        .unwrap()
+        .contains("simulated Raft error"));
 }

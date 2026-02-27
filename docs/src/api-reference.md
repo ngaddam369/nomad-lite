@@ -33,6 +33,24 @@ curl -X POST http://localhost:8081/api/jobs \
 # }
 ```
 
+**Cancel a job:**
+
+```bash
+curl -X DELETE http://localhost:8081/api/jobs/ef319e40-c888-490d-8349-e9c05f78cf5a
+# Response (success):
+# {
+#   "success": true,
+#   "error": null
+# }
+
+# Response (already terminal):
+# HTTP 400
+# {
+#   "success": false,
+#   "error": "job is already completed"
+# }
+```
+
 **List all jobs:**
 
 ```bash
@@ -59,6 +77,7 @@ curl http://localhost:8081/api/jobs
 | Method | Description | Leader Only |
 |--------|-------------|-------------|
 | `SubmitJob(command)` | Submit a job | Yes |
+| `CancelJob(job_id)` | Cancel a pending or running job | Yes |
 | `GetJobStatus(job_id)` | Get job status | No |
 | `ListJobs()` | List jobs (paginated) | No |
 | `StreamJobs()` | Stream jobs | No |
@@ -77,6 +96,17 @@ curl http://localhost:8081/api/jobs
 | `DEADLINE_EXCEEDED` | Raft did not commit the entry within 5 seconds | Retry; may indicate a degraded cluster |
 | `UNAVAILABLE` | Node is draining, or the Raft loop has stopped | Retry on a different node |
 | `INVALID_ARGUMENT` | Empty command string | Fix the request |
+
+#### CancelJob error codes
+
+| gRPC status | Meaning | Client action |
+|---|---|---|
+| `OK` | Job cancelled and committed | — |
+| `FAILED_PRECONDITION` | Node is not the leader, or job is already in a terminal state | Redirect to leader / check job status |
+| `NOT_FOUND` | Job ID does not exist | — |
+| `RESOURCE_EXHAUSTED` | Leader proposal queue is full | Retry with exponential backoff |
+| `DEADLINE_EXCEEDED` | Raft did not commit within 5 seconds | Retry |
+| `INVALID_ARGUMENT` | Malformed job UUID | Fix the request |
 
 ### InternalService (node-to-node, not client-facing)
 

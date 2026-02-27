@@ -3,10 +3,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use axum::{
-    extract::State,
+    extract::{Path, State},
     http::StatusCode,
     response::{Html, IntoResponse},
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -16,7 +16,8 @@ use tower_http::cors::{Any, CorsLayer};
 
 use crate::raft::node::RaftMessage;
 use crate::raft::{Command, RaftNode};
-use crate::scheduler::{Job, JobQueue};
+use crate::scheduler::{Job, JobQueue, JobStatus};
+use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct DashboardState {
@@ -60,6 +61,12 @@ struct SubmitJobResponse {
     error: Option<String>,
 }
 
+#[derive(Serialize)]
+struct CancelJobResponse {
+    success: bool,
+    error: Option<String>,
+}
+
 pub async fn run_dashboard(
     addr: SocketAddr,
     state: DashboardState,
@@ -75,6 +82,7 @@ pub async fn run_dashboard(
         .route("/api/cluster", get(cluster_status_handler))
         .route("/api/jobs", get(list_jobs_handler))
         .route("/api/jobs", post(submit_job_handler))
+        .route("/api/jobs/:id", delete(cancel_job_handler))
         .layer(cors)
         .with_state(state);
 
@@ -95,6 +103,103 @@ pub async fn run_dashboard(
         .await
     {
         tracing::error!(error = %e, "Dashboard server failed");
+    }
+}
+
+pub async fn cancel_job_handler(
+    Path(id): Path<String>,
+    State(state): State<DashboardState>,
+) -> impl IntoResponse {
+    let job_id = match Uuid::parse_str(&id) {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(CancelJobResponse {
+                    success: false,
+                    error: Some("invalid job id".to_string()),
+                }),
+            );
+        }
+    };
+
+    if !state.raft_node.is_leader().await {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(CancelJobResponse {
+                success: false,
+                error: Some("not the leader".to_string()),
+            }),
+        );
+    }
+
+    {
+        let queue = state.job_queue.read().await;
+        match queue.get_job(&job_id) {
+            None => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(CancelJobResponse {
+                        success: false,
+                        error: Some("job not found".to_string()),
+                    }),
+                );
+            }
+            Some(job) if !matches!(job.status, JobStatus::Pending | JobStatus::Running) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(CancelJobResponse {
+                        success: false,
+                        error: Some(format!("job is already {}", job.status)),
+                    }),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    if state
+        .raft_node
+        .message_sender()
+        .send(RaftMessage::AppendCommand {
+            command: Command::CancelJob { job_id },
+            response_tx: tx,
+        })
+        .await
+        .is_err()
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(CancelJobResponse {
+                success: false,
+                error: Some("failed to send to Raft".to_string()),
+            }),
+        );
+    }
+
+    match rx.await {
+        Ok(Ok(_)) => (
+            StatusCode::OK,
+            Json(CancelJobResponse {
+                success: true,
+                error: None,
+            }),
+        ),
+        Ok(Err(e)) => (
+            StatusCode::BAD_REQUEST,
+            Json(CancelJobResponse {
+                success: false,
+                error: Some(e),
+            }),
+        ),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(CancelJobResponse {
+                success: false,
+                error: Some("Raft response failed".to_string()),
+            }),
+        ),
     }
 }
 

@@ -72,6 +72,9 @@ jobs:
       - name: Run persistence tests
         run: cargo test --test persistence_tests --verbose -- --test-threads=1
 
+      - name: Run cancellation tests
+        run: cargo test --test cancel_tests --verbose -- --test-threads=1
+
       - name: Verify openssl is available (required for cert generation)
         run: openssl version
 
@@ -100,6 +103,7 @@ jobs:
           --test raft_rpc_tests
           --test scheduler_tests
           --test dashboard_tests
+          --test cancel_tests
           --test internal_service_tests
           --test executor_tests
           --test tls_tests

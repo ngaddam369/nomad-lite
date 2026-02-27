@@ -313,6 +313,10 @@ impl Node {
                                 completed_at,
                             } => {
                                 let mut queue = job_queue.write().await;
+                                // Skip if already cancelled — docker rm -f may race with this update
+                                if queue.get_job(job_id).map(|j| j.status) == Some(JobStatus::Cancelled) {
+                                    continue;
+                                }
                                 queue.update_status_metadata(job_id, *status, *executed_by, *exit_code, *completed_at);
                                 tracing::debug!(
                                     job_id = %job_id,
@@ -325,6 +329,10 @@ impl Node {
                             Command::BatchUpdateJobStatus { updates } => {
                                 let mut queue = job_queue.write().await;
                                 for u in updates {
+                                    // Skip if already cancelled
+                                    if queue.get_job(&u.job_id).map(|j| j.status) == Some(JobStatus::Cancelled) {
+                                        continue;
+                                    }
                                     queue.update_status_metadata(&u.job_id, u.status, u.executed_by, u.exit_code, u.completed_at);
                                     tracing::debug!(
                                         job_id = %u.job_id,
@@ -352,7 +360,27 @@ impl Node {
                                     worker_notify.notify_one();
                                 }
                             }
-                            Command::Noop => {}
+                            Command::CancelJob { job_id } => {
+                            let mut queue = job_queue.write().await;
+                            if let Some(job) = queue.get_job(job_id) {
+                                if matches!(job.status, JobStatus::Pending | JobStatus::Running) {
+                                    let kill_container = job.status == JobStatus::Running
+                                        && job.assigned_worker == Some(raft_node.id);
+                                    queue.cancel_job(job_id);
+                                    if kill_container {
+                                        let name = format!("nomad-{}", job_id.as_simple());
+                                        tokio::spawn(async move {
+                                            let _ = tokio::process::Command::new("docker")
+                                                .args(["rm", "-f", &name])
+                                                .output()
+                                                .await;
+                                        });
+                                    }
+                                }
+                            }
+                            tracing::info!(job_id = %job_id, "Job cancelled");
+                        }
+                        Command::Noop => {}
                         }
                     }
                     if should_wake_assigner {
@@ -613,6 +641,15 @@ impl Node {
             for (job_id, command) in jobs_to_run {
                 let result = executor.execute(job_id, &command).await;
 
+                // Skip status update if the job was cancelled while we were executing
+                if job_queue.read().await.get_job(&job_id).map(|j| j.status)
+                    == Some(JobStatus::Cancelled)
+                {
+                    // Still mark job completed in assigner to free the slot
+                    job_assigner.write().await.job_completed(node_id, &job_id);
+                    continue;
+                }
+
                 // Update local job with full result (output stored locally only)
                 let completed_at = Utc::now();
                 {
@@ -687,6 +724,7 @@ impl Node {
                                 JobStatus::Running => ProtoJobStatus::Running as i32,
                                 JobStatus::Completed => ProtoJobStatus::Completed as i32,
                                 JobStatus::Failed => ProtoJobStatus::Failed as i32,
+                                JobStatus::Cancelled => ProtoJobStatus::Cancelled as i32,
                             },
                             executed_by: u.executed_by,
                             exit_code: u.exit_code,

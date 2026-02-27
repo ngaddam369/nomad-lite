@@ -93,7 +93,12 @@ message Command {
         RegisterWorkerCommand register_worker = 3;
         BatchUpdateJobStatusCommand batch_update_job_status = 4;
         AssignJobCommand assign_job = 5;
+        CancelJobCommand cancel_job = 6;
     }
+}
+
+message CancelJobCommand {
+    string job_id = 1;
 }
 
 message AssignJobCommand {
@@ -137,6 +142,9 @@ service SchedulerService {
     // Submit a new job to the cluster
     rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
 
+    // Cancel a pending or running job
+    rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
+
     // Get status of a job
     rpc GetJobStatus(GetJobStatusRequest) returns (GetJobStatusResponse);
 
@@ -158,6 +166,9 @@ service SchedulerService {
     // Drain this node: stop accepting jobs, wait for running jobs to finish, transfer leadership
     rpc DrainNode(DrainNodeRequest) returns (DrainNodeResponse);
 }
+
+message CancelJobRequest  { string job_id = 1; }
+message CancelJobResponse { bool success = 1; string message = 2; }
 
 message SubmitJobRequest {
     string command = 1;
@@ -311,4 +322,5 @@ enum JobStatus {
     JOB_STATUS_RUNNING = 2;
     JOB_STATUS_COMPLETED = 3;
     JOB_STATUS_FAILED = 4;
+    JOB_STATUS_CANCELLED = 5;
 }

@@ -13,11 +13,12 @@ use crate::proto::internal_service_client::InternalServiceClient;
 use crate::proto::scheduler_service_client::SchedulerServiceClient;
 use crate::proto::scheduler_service_server::SchedulerService;
 use crate::proto::{
-    DrainNodeRequest, DrainNodeResponse, GetClusterStatusRequest, GetClusterStatusResponse,
-    GetJobOutputRequest, GetJobStatusRequest, GetJobStatusResponse, GetRaftLogEntriesRequest,
-    GetRaftLogEntriesResponse, JobInfo, JobStatus as ProtoJobStatus, ListJobsRequest,
-    ListJobsResponse, NodeInfo, RaftLogEntryInfo, StreamJobsRequest, SubmitJobRequest,
-    SubmitJobResponse, TransferLeadershipRequest, TransferLeadershipResponse,
+    CancelJobRequest, CancelJobResponse, DrainNodeRequest, DrainNodeResponse,
+    GetClusterStatusRequest, GetClusterStatusResponse, GetJobOutputRequest, GetJobStatusRequest,
+    GetJobStatusResponse, GetRaftLogEntriesRequest, GetRaftLogEntriesResponse, JobInfo,
+    JobStatus as ProtoJobStatus, ListJobsRequest, ListJobsResponse, NodeInfo, RaftLogEntryInfo,
+    StreamJobsRequest, SubmitJobRequest, SubmitJobResponse, TransferLeadershipRequest,
+    TransferLeadershipResponse,
 };
 use crate::raft::rpc::log_entry_to_proto;
 use crate::raft::{Command, RaftNode};
@@ -249,6 +250,57 @@ impl SchedulerService for ClientService {
             }
             Ok(Ok(Err(e))) => Err(Status::internal(format!("Raft error: {}", e))),
             Ok(Err(_)) => Err(Status::unavailable("Raft loop is not running")),
+        }
+    }
+
+    async fn cancel_job(
+        &self,
+        request: Request<CancelJobRequest>,
+    ) -> Result<Response<CancelJobResponse>, Status> {
+        let req = request.into_inner();
+        let job_id =
+            Uuid::parse_str(&req.job_id).map_err(|_| Status::invalid_argument("invalid job_id"))?;
+
+        if !self.raft_node.is_leader().await {
+            let leader = self.raft_node.get_leader_id().await;
+            return Err(Status::failed_precondition(format!(
+                "not the leader; leader is node {:?}",
+                leader
+            )));
+        }
+
+        {
+            let queue = self.job_queue.read().await;
+            match queue.get_job(&job_id) {
+                None => return Err(Status::not_found("job not found")),
+                Some(job) if !matches!(job.status, JobStatus::Pending | JobStatus::Running) => {
+                    return Err(Status::failed_precondition(format!(
+                        "job is already {}",
+                        job.status
+                    )))
+                }
+                _ => {}
+            }
+        }
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.raft_node
+            .message_sender()
+            .try_send(crate::raft::node::RaftMessage::AppendCommand {
+                command: Command::CancelJob { job_id },
+                response_tx: tx,
+            })
+            .map_err(|_| Status::resource_exhausted("proposal queue full"))?;
+
+        match tokio::time::timeout(tokio::time::Duration::from_secs(5), rx).await {
+            Ok(Ok(Ok(_))) => Ok(Response::new(CancelJobResponse {
+                success: true,
+                message: format!("job {} cancelled", job_id),
+            })),
+            Ok(Ok(Err(e))) => Err(Status::internal(e)),
+            _ => Err(Status::deadline_exceeded(
+                "timed out waiting for Raft commit",
+            )),
         }
     }
 
@@ -654,5 +706,6 @@ fn status_to_proto(status: &JobStatus) -> ProtoJobStatus {
         JobStatus::Running => ProtoJobStatus::Running,
         JobStatus::Completed => ProtoJobStatus::Completed,
         JobStatus::Failed => ProtoJobStatus::Failed,
+        JobStatus::Cancelled => ProtoJobStatus::Cancelled,
     }
 }
