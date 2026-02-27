@@ -4,6 +4,18 @@ use uuid::Uuid;
 
 use crate::raft::state::SnapshotJob;
 
+pub const MAX_COMMAND_LEN: usize = 1024;
+
+pub fn validate_command(cmd: &str) -> Result<(), &'static str> {
+    if cmd.trim().is_empty() {
+        return Err("Command cannot be empty");
+    }
+    if cmd.len() > MAX_COMMAND_LEN {
+        return Err("Command exceeds maximum allowed length");
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JobStatus {
     Pending,

@@ -22,5 +22,5 @@ pub mod assigner;
 pub mod job;
 pub mod queue;
 
-pub use job::{Job, JobStatus};
+pub use job::{validate_command, Job, JobStatus, MAX_COMMAND_LEN};
 pub use queue::JobQueue;

@@ -127,7 +127,7 @@ curl http://localhost:8081/health/ready
 | `RESOURCE_EXHAUSTED` | Leader proposal queue is full (>256 pending) | Retry with exponential backoff |
 | `DEADLINE_EXCEEDED` | Raft did not commit the entry within 5 seconds | Retry; may indicate a degraded cluster |
 | `UNAVAILABLE` | Node is draining, or the Raft loop has stopped | Retry on a different node |
-| `INVALID_ARGUMENT` | Empty command string | Fix the request |
+| `INVALID_ARGUMENT` | Empty command string, or command exceeds 1024 bytes | Fix the request |
 
 #### CancelJob error codes
 

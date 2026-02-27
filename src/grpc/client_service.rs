@@ -181,10 +181,8 @@ impl SchedulerService for ClientService {
             ));
         }
 
-        // Validate command is not empty
-        if req.command.trim().is_empty() {
-            return Err(Status::invalid_argument("Command cannot be empty"));
-        }
+        // Validate command
+        crate::scheduler::validate_command(&req.command).map_err(Status::invalid_argument)?;
 
         // Check if we're the leader
         if !self.raft_node.is_leader().await {

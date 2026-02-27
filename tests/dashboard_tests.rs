@@ -667,6 +667,68 @@ async fn test_cluster_status_self_node_is_alive() {
     assert_eq!(nodes[0]["is_alive"], true);
 }
 
+// ── input validation tests ────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_submit_job_empty_command() {
+    let (state, _rx) = create_test_state();
+    let app = create_test_app(state);
+
+    let body = serde_json::to_string(&json!({ "command": "   " })).unwrap();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["success"], false);
+    assert!(json["error"]
+        .as_str()
+        .unwrap()
+        .to_lowercase()
+        .contains("empty"));
+}
+
+#[tokio::test]
+async fn test_submit_job_command_too_long() {
+    let (state, _rx) = create_test_state();
+    let app = create_test_app(state);
+
+    let long_command = "a".repeat(nomad_lite::scheduler::MAX_COMMAND_LEN + 1);
+    let body = serde_json::to_string(&json!({ "command": long_command })).unwrap();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/jobs")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["success"], false);
+    let err = json["error"].as_str().unwrap().to_lowercase();
+    assert!(
+        err.contains("length") || err.contains("exceeds"),
+        "error should mention length/exceeds, got: {}",
+        err
+    );
+}
+
 // ── health check tests ────────────────────────────────────────────────────────
 
 #[tokio::test]

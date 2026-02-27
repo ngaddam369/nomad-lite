@@ -408,6 +408,17 @@ pub async fn submit_job_handler(
     State(state): State<DashboardState>,
     Json(payload): Json<SubmitJobRequest>,
 ) -> impl IntoResponse {
+    if let Err(msg) = crate::scheduler::validate_command(&payload.command) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(SubmitJobResponse {
+                success: false,
+                job_id: None,
+                error: Some(msg.to_string()),
+            }),
+        );
+    }
+
     if state.draining.load(Ordering::Relaxed) {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
