@@ -10,6 +10,36 @@ use nomad_lite::raft::rpc::log_entry_to_proto;
 use std::time::Duration;
 use test_harness::{assert_eventually, TestCluster};
 
+// Additional imports for ListJobs filter tests (Tests 16-22)
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use tonic::Request;
+
+use nomad_lite::config::NodeConfig;
+use nomad_lite::grpc::client_service::ClientService;
+use nomad_lite::proto::scheduler_service_server::SchedulerService;
+use nomad_lite::proto::{JobStatus as ProtoJobStatus, ListJobsRequest};
+use nomad_lite::raft::state::RaftRole;
+use nomad_lite::raft::RaftNode;
+use nomad_lite::scheduler::{Job, JobQueue, JobStatus};
+use uuid::Uuid;
+
+// ---------------------------------------------------------------------------
+// Helpers shared by the ListJobs filter tests
+// ---------------------------------------------------------------------------
+
+async fn make_leader_service(queue: Arc<RwLock<JobQueue>>) -> ClientService {
+    let config = NodeConfig::new(1, "127.0.0.1:0".parse().unwrap());
+    let (node, _rx) = RaftNode::new(config.clone(), None);
+    {
+        let mut state = node.state.write().await;
+        state.role = RaftRole::Leader;
+    }
+    let draining = Arc::new(AtomicBool::new(false));
+    ClientService::new(config, Arc::new(node), queue, None, draining)
+}
+
 /// Test 1: Three-node cluster elects exactly one leader
 #[tokio::test]
 async fn test_three_node_cluster_elects_leader() {
@@ -666,4 +696,326 @@ async fn test_raft_log_accessible_from_follower() {
     drop(follower_state);
     drop(leader_state);
     cluster.shutdown().await;
+}
+
+// =============================================================================
+// Tests 16-22: ListJobs filter behaviour
+// These tests call the ClientService handler directly (no full cluster needed).
+// =============================================================================
+
+/// Test 16: status filter returns only matching jobs
+#[tokio::test]
+async fn test_list_jobs_status_filter() {
+    let queue = Arc::new(RwLock::new(JobQueue::new()));
+
+    let pending_job = Job::new("echo pending".to_string());
+    let completed_job = Job::new("echo completed".to_string());
+    let completed_id = completed_job.id;
+
+    {
+        let mut q = queue.write().await;
+        q.add_job(pending_job);
+        q.add_job(completed_job);
+        q.update_status(&completed_id, JobStatus::Completed, None, None);
+    }
+
+    let svc = make_leader_service(queue).await;
+
+    // Filter: pending only
+    let resp = svc
+        .list_jobs(Request::new(ListJobsRequest {
+            status_filter: ProtoJobStatus::Pending as i32,
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(resp.total_count, 1, "should return only 1 pending job");
+    assert_eq!(resp.jobs[0].command, "echo pending");
+
+    // Filter: completed only
+    let resp = svc
+        .list_jobs(Request::new(ListJobsRequest {
+            status_filter: ProtoJobStatus::Completed as i32,
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(resp.total_count, 1);
+    assert_eq!(resp.jobs[0].command, "echo completed");
+}
+
+/// Test 17: worker_id_filter matches assigned_worker and executed_by
+#[tokio::test]
+async fn test_list_jobs_worker_filter() {
+    let queue = Arc::new(RwLock::new(JobQueue::new()));
+
+    let job1 = Job::new("cmd for worker 1".to_string());
+    let job2 = Job::new("cmd for worker 2".to_string());
+    let job3 = Job::new("cmd executed by worker 1".to_string());
+    let id1 = job1.id;
+    let id2 = job2.id;
+    let id3 = job3.id;
+
+    {
+        let mut q = queue.write().await;
+        q.add_job(job1);
+        q.add_job(job2);
+        q.add_job(job3);
+        q.assign_job(&id1, 1); // assigned_worker = 1
+        q.assign_job(&id2, 2); // assigned_worker = 2
+                               // Mark id3 as executed_by worker 1
+        q.update_job_result(
+            &id3,
+            JobStatus::Completed,
+            1,
+            Some(0),
+            None,
+            None,
+            Utc::now(),
+        );
+    }
+
+    let svc = make_leader_service(queue).await;
+
+    let resp = svc
+        .list_jobs(Request::new(ListJobsRequest {
+            worker_id_filter: 1,
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        resp.total_count, 2,
+        "worker 1 should match both assigned_worker and executed_by"
+    );
+    let ids: Vec<Uuid> = resp
+        .jobs
+        .iter()
+        .map(|j| Uuid::parse_str(&j.job_id).unwrap())
+        .collect();
+    assert!(ids.contains(&id1));
+    assert!(ids.contains(&id3));
+    assert!(!ids.contains(&id2));
+
+    // Worker 2 matches only the assigned job
+    let resp2 = svc
+        .list_jobs(Request::new(ListJobsRequest {
+            worker_id_filter: 2,
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(resp2.total_count, 1);
+    assert_eq!(Uuid::parse_str(&resp2.jobs[0].job_id).unwrap(), id2);
+}
+
+/// Test 18: command_filter does case-insensitive substring matching
+#[tokio::test]
+async fn test_list_jobs_command_filter() {
+    let queue = Arc::new(RwLock::new(JobQueue::new()));
+
+    {
+        let mut q = queue.write().await;
+        q.add_job(Job::new("echo hello world".to_string()));
+        q.add_job(Job::new("sleep 10".to_string()));
+        q.add_job(Job::new("ECHO uppercase".to_string()));
+    }
+
+    let svc = make_leader_service(queue).await;
+
+    // Lowercase filter matches both "echo" jobs (case-insensitive)
+    let resp = svc
+        .list_jobs(Request::new(ListJobsRequest {
+            command_filter: "echo".to_string(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(resp.total_count, 2);
+    for job in &resp.jobs {
+        assert!(
+            job.command.to_lowercase().contains("echo"),
+            "unexpected job: {}",
+            job.command
+        );
+    }
+
+    // Filter that matches nothing
+    let resp_empty = svc
+        .list_jobs(Request::new(ListJobsRequest {
+            command_filter: "python".to_string(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(resp_empty.total_count, 0);
+}
+
+/// Test 19: created_after_ms and created_before_ms narrow the result set
+#[tokio::test]
+async fn test_list_jobs_time_range_filter() {
+    let queue = Arc::new(RwLock::new(JobQueue::new()));
+
+    let t_old = Utc::now() - chrono::Duration::hours(3);
+    let t_mid = Utc::now() - chrono::Duration::hours(1);
+    let t_new = Utc::now();
+
+    let j_old = Job::with_id(Uuid::new_v4(), "old job".to_string(), t_old);
+    let j_mid = Job::with_id(Uuid::new_v4(), "mid job".to_string(), t_mid);
+    let j_new = Job::with_id(Uuid::new_v4(), "new job".to_string(), t_new);
+    let id_mid = j_mid.id;
+
+    {
+        let mut q = queue.write().await;
+        q.add_job(j_old);
+        q.add_job(j_mid);
+        q.add_job(j_new);
+    }
+
+    let svc = make_leader_service(queue).await;
+
+    // Window: between 2h ago and 30min ago → only mid job
+    let after_ms = (Utc::now() - chrono::Duration::hours(2)).timestamp_millis();
+    let before_ms = (Utc::now() - chrono::Duration::minutes(30)).timestamp_millis();
+
+    let resp = svc
+        .list_jobs(Request::new(ListJobsRequest {
+            created_after_ms: after_ms,
+            created_before_ms: before_ms,
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(resp.total_count, 1, "only the middle job fits the window");
+    assert_eq!(Uuid::parse_str(&resp.jobs[0].job_id).unwrap(), id_mid);
+}
+
+/// Test 20: combined status + command filters apply together (AND semantics)
+#[tokio::test]
+async fn test_list_jobs_combined_filters() {
+    let queue = Arc::new(RwLock::new(JobQueue::new()));
+
+    let j1 = Job::new("echo pending".to_string()); // pending + echo
+    let j2 = Job::new("echo completed".to_string()); // will be completed + echo
+    let j3 = Job::new("sleep pending".to_string()); // pending + sleep
+    let id2 = j2.id;
+
+    {
+        let mut q = queue.write().await;
+        q.add_job(j1);
+        q.add_job(j2);
+        q.add_job(j3);
+        q.update_status(&id2, JobStatus::Completed, None, None);
+    }
+
+    let svc = make_leader_service(queue).await;
+
+    // pending + "echo" → only j1
+    let resp = svc
+        .list_jobs(Request::new(ListJobsRequest {
+            status_filter: ProtoJobStatus::Pending as i32,
+            command_filter: "echo".to_string(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(resp.total_count, 1);
+    assert_eq!(resp.jobs[0].command, "echo pending");
+}
+
+/// Test 21: filters interact correctly with pagination (total_count reflects filtered set)
+#[tokio::test]
+async fn test_list_jobs_filter_with_pagination() {
+    let queue = Arc::new(RwLock::new(JobQueue::new()));
+
+    {
+        let mut q = queue.write().await;
+        for i in 0..7 {
+            q.add_job(Job::new(format!("echo job {}", i)));
+        }
+        // Add 3 non-echo jobs that should be excluded
+        for i in 0..3 {
+            q.add_job(Job::new(format!("sleep {}", i)));
+        }
+    }
+
+    let svc = make_leader_service(queue).await;
+
+    // Page 1: page_size=3, command_filter="echo" → first 3 of 7
+    let resp1 = svc
+        .list_jobs(Request::new(ListJobsRequest {
+            page_size: 3,
+            command_filter: "echo".to_string(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(resp1.total_count, 7, "total_count reflects filtered set");
+    assert_eq!(resp1.jobs.len(), 3, "first page has 3 jobs");
+    assert!(!resp1.next_page_token.is_empty(), "should have more pages");
+
+    // Page 2: follow the token
+    let resp2 = svc
+        .list_jobs(Request::new(ListJobsRequest {
+            page_size: 3,
+            page_token: resp1.next_page_token.clone(),
+            command_filter: "echo".to_string(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(resp2.total_count, 7);
+    assert_eq!(resp2.jobs.len(), 3, "second page has 3 jobs");
+
+    // Page 3: last page has 1 remaining job
+    let resp3 = svc
+        .list_jobs(Request::new(ListJobsRequest {
+            page_size: 3,
+            page_token: resp2.next_page_token.clone(),
+            command_filter: "echo".to_string(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(resp3.total_count, 7);
+    assert_eq!(resp3.jobs.len(), 1, "last page has 1 remaining job");
+    assert!(resp3.next_page_token.is_empty(), "no more pages");
+}
+
+/// Test 22: filter with no matching jobs returns empty response
+#[tokio::test]
+async fn test_list_jobs_filter_no_matches() {
+    let queue = Arc::new(RwLock::new(JobQueue::new()));
+
+    {
+        let mut q = queue.write().await;
+        q.add_job(Job::new("echo hello".to_string()));
+        q.add_job(Job::new("sleep 5".to_string()));
+    }
+
+    let svc = make_leader_service(queue).await;
+
+    // No jobs are completed
+    let resp = svc
+        .list_jobs(Request::new(ListJobsRequest {
+            status_filter: ProtoJobStatus::Completed as i32,
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(resp.total_count, 0);
+    assert!(resp.jobs.is_empty());
+    assert!(resp.next_page_token.is_empty());
 }

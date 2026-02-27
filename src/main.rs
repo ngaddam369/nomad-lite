@@ -182,6 +182,26 @@ enum JobCommands {
         /// Fetch all pages automatically
         #[arg(long)]
         all: bool,
+
+        /// Filter by job status: pending, running, completed, failed, cancelled
+        #[arg(long, value_name = "STATUS")]
+        status: Option<String>,
+
+        /// Filter by worker node ID (matches assigned_worker or executed_by)
+        #[arg(long, value_name = "WORKER_ID")]
+        worker: Option<u64>,
+
+        /// Filter by command substring (case-insensitive)
+        #[arg(long, value_name = "SUBSTR")]
+        command_substr: Option<String>,
+
+        /// Only jobs created at or after this Unix timestamp in milliseconds
+        #[arg(long, value_name = "MS")]
+        created_after_ms: Option<i64>,
+
+        /// Only jobs created at or before this Unix timestamp in milliseconds
+        #[arg(long, value_name = "MS")]
+        created_before_ms: Option<i64>,
     },
 }
 
@@ -219,6 +239,18 @@ enum LogCommands {
         #[arg(long, default_value = "100")]
         limit: u32,
     },
+}
+
+// =============================================================================
+// List Jobs Filters
+// =============================================================================
+
+struct ListJobsFilters {
+    status_str: Option<String>,
+    worker_id: Option<u64>,
+    command_substr: Option<String>,
+    created_after_ms: Option<i64>,
+    created_before_ms: Option<i64>,
 }
 
 // =============================================================================
@@ -778,17 +810,55 @@ async fn handle_job_list(
     stream: bool,
     page_size: u32,
     all: bool,
+    filters: ListJobsFilters,
     output_format: &OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let ListJobsFilters {
+        status_str,
+        worker_id,
+        command_substr,
+        created_after_ms,
+        created_before_ms,
+    } = filters;
+    // Parse --status string into the proto enum integer value
+    let status_filter: i32 = match status_str.as_deref().map(|s| s.to_ascii_lowercase()) {
+        None => 0, // JOB_STATUS_UNSPECIFIED = no filter
+        Some(ref s) => match s.as_str() {
+            "pending" => JobStatus::Pending as i32,
+            "running" => JobStatus::Running as i32,
+            "completed" => JobStatus::Completed as i32,
+            "failed" => JobStatus::Failed as i32,
+            "cancelled" => JobStatus::Cancelled as i32,
+            other => {
+                eprintln!(
+                    "Error: Unknown status '{}'. Valid values: pending, running, completed, failed, cancelled",
+                    other
+                );
+                std::process::exit(1);
+            }
+        },
+    };
+
     let mut all_jobs: Vec<JobListItem> = Vec::new();
     #[allow(unused_assignments)]
     let mut total_count = 0u32;
     let mut has_more = false;
 
     if stream {
-        // Use streaming API for efficient memory usage
+        // Streaming only supports the status filter; warn if others are set
+        if worker_id.is_some()
+            || command_substr.is_some()
+            || created_after_ms.is_some()
+            || created_before_ms.is_some()
+        {
+            eprintln!(
+                "Warning: --stream only supports --status; \
+                 --worker, --command-substr, and time filters are ignored"
+            );
+        }
+
         let mut job_stream = client
-            .stream_jobs(StreamJobsRequest { status_filter: 0 })
+            .stream_jobs(StreamJobsRequest { status_filter })
             .await?
             .into_inner();
 
@@ -811,13 +881,18 @@ async fn handle_job_list(
         }
         total_count = all_jobs.len() as u32;
     } else {
-        // Use paginated API
+        // Use paginated API with full filter support
         let mut page_token = String::new();
         loop {
             let response = client
                 .list_jobs(ListJobsRequest {
                     page_size,
                     page_token: page_token.clone(),
+                    status_filter,
+                    worker_id_filter: worker_id.unwrap_or(0),
+                    command_filter: command_substr.clone().unwrap_or_default(),
+                    created_after_ms: created_after_ms.unwrap_or(0),
+                    created_before_ms: created_before_ms.unwrap_or(0),
                 })
                 .await?
                 .into_inner();
@@ -1152,9 +1227,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     stream,
                     page_size,
                     all,
+                    status,
+                    worker,
+                    command_substr,
+                    created_after_ms,
+                    created_before_ms,
                 } => {
-                    handle_job_list(&mut grpc_client, stream, page_size, all, &client.output)
-                        .await?;
+                    handle_job_list(
+                        &mut grpc_client,
+                        stream,
+                        page_size,
+                        all,
+                        ListJobsFilters {
+                            status_str: status,
+                            worker_id: worker,
+                            command_substr,
+                            created_after_ms,
+                            created_before_ms,
+                        },
+                        &client.output,
+                    )
+                    .await?;
                 }
             }
         }

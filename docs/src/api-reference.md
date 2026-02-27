@@ -111,12 +111,26 @@ curl http://localhost:8081/health/ready
 | `SubmitJob(command)` | Submit a job | Yes |
 | `CancelJob(job_id)` | Cancel a pending or running job | Yes |
 | `GetJobStatus(job_id)` | Get job status | No |
-| `ListJobs()` | List jobs (paginated) | No |
+| `ListJobs(page_size, page_token, status_filter, worker_id_filter, command_filter, created_after_ms, created_before_ms)` | List jobs (paginated, filterable) | No |
 | `StreamJobs()` | Stream jobs | No |
 | `GetClusterStatus()` | Cluster info | Forwarded to leader |
 | `GetRaftLogEntries()` | View Raft log entries | Forwarded to leader |
 | `TransferLeadership(target)` | Transfer leadership | Yes |
 | `DrainNode()` | Drain node for maintenance | No |
+
+#### ListJobs request fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `page_size` | uint32 | 100 | Max results per page (capped at 1000) |
+| `page_token` | string | "" | Token from the previous response for the next page |
+| `status_filter` | JobStatus | UNSPECIFIED | Only return jobs with this status; 0/UNSPECIFIED = no filter |
+| `worker_id_filter` | uint64 | 0 | Only return jobs whose `assigned_worker` or `executed_by` matches; 0 = no filter |
+| `command_filter` | string | "" | Case-insensitive substring match on the command; empty = no filter |
+| `created_after_ms` | int64 | 0 | Only return jobs created at or after this Unix timestamp (ms); 0 = no bound |
+| `created_before_ms` | int64 | 0 | Only return jobs created at or before this Unix timestamp (ms); 0 = no bound |
+
+`total_count` in the response reflects the filtered result set size (not the total queue size).
 
 #### SubmitJob error codes
 

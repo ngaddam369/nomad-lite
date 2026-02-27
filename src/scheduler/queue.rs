@@ -177,6 +177,62 @@ impl JobQueue {
         jobs
     }
 
+    /// Return jobs that match all provided filters, sorted chronologically.
+    ///
+    /// `None` for any parameter means "no restriction on that dimension".
+    /// `worker_id_filter` matches on either `assigned_worker` or `executed_by`.
+    /// `command_filter` is a case-insensitive substring match.
+    pub fn filtered_jobs(
+        &self,
+        status_filter: Option<JobStatus>,
+        worker_id_filter: Option<u64>,
+        command_filter: Option<&str>,
+        created_after_ms: Option<i64>,
+        created_before_ms: Option<i64>,
+    ) -> Vec<&Job> {
+        let command_lower = command_filter.map(|s| s.to_lowercase());
+        let created_after = created_after_ms
+            .and_then(|ms| chrono::TimeZone::timestamp_millis_opt(&Utc, ms).single());
+        let created_before = created_before_ms
+            .and_then(|ms| chrono::TimeZone::timestamp_millis_opt(&Utc, ms).single());
+
+        let mut jobs: Vec<&Job> = self
+            .jobs
+            .values()
+            .filter(|j| {
+                if let Some(status) = status_filter {
+                    if j.status != status {
+                        return false;
+                    }
+                }
+                if let Some(worker_id) = worker_id_filter {
+                    if j.assigned_worker != Some(worker_id) && j.executed_by != Some(worker_id) {
+                        return false;
+                    }
+                }
+                if let Some(ref lower) = command_lower {
+                    if !j.command.to_lowercase().contains(lower.as_str()) {
+                        return false;
+                    }
+                }
+                if let Some(after) = created_after {
+                    if j.created_at < after {
+                        return false;
+                    }
+                }
+                if let Some(before) = created_before {
+                    if j.created_at > before {
+                        return false;
+                    }
+                }
+                true
+            })
+            .collect();
+
+        jobs.sort_by_key(|j| j.created_at);
+        jobs
+    }
+
     /// Count jobs currently running on a specific worker
     pub fn running_jobs_on_worker(&self, worker_id: u64) -> usize {
         self.jobs
@@ -500,5 +556,206 @@ mod tests {
         let removed = queue.cleanup_finished_jobs(3600);
         assert_eq!(removed, 0);
         assert!(queue.get_job(&id).is_some());
+    }
+
+    // =========================================================================
+    // filtered_jobs tests
+    // =========================================================================
+
+    #[test]
+    fn test_filtered_jobs_no_filters_matches_all_jobs() {
+        let mut queue = JobQueue::new();
+        queue.add_job(Job::new("echo a".to_string()));
+        queue.add_job(Job::new("echo b".to_string()));
+        queue.add_job(Job::new("sleep 1".to_string()));
+
+        let all = queue.all_jobs();
+        let filtered = queue.filtered_jobs(None, None, None, None, None);
+        assert_eq!(filtered.len(), all.len());
+    }
+
+    #[test]
+    fn test_filtered_jobs_by_status_pending() {
+        let mut queue = JobQueue::new();
+        let job_a = Job::new("echo a".to_string());
+        let id_a = job_a.id;
+        let job_b = Job::new("echo b".to_string());
+        queue.add_job(job_a);
+        queue.add_job(job_b);
+
+        // Complete job_a
+        queue.update_status(&id_a, JobStatus::Completed, None, None);
+
+        let pending = queue.filtered_jobs(Some(JobStatus::Pending), None, None, None, None);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].status, JobStatus::Pending);
+    }
+
+    #[test]
+    fn test_filtered_jobs_by_status_completed() {
+        let mut queue = JobQueue::new();
+        let job = Job::new("echo x".to_string());
+        let id = job.id;
+        queue.add_job(job);
+        queue.update_status(&id, JobStatus::Completed, None, None);
+        queue.add_job(Job::new("echo y".to_string())); // stays pending
+
+        let completed = queue.filtered_jobs(Some(JobStatus::Completed), None, None, None, None);
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].id, id);
+    }
+
+    #[test]
+    fn test_filtered_jobs_by_worker_assigned() {
+        let mut queue = JobQueue::new();
+        let job1 = Job::new("cmd1".to_string());
+        let id1 = job1.id;
+        let job2 = Job::new("cmd2".to_string());
+        let id2 = job2.id;
+        queue.add_job(job1);
+        queue.add_job(job2);
+        queue.assign_job(&id1, 1);
+        queue.assign_job(&id2, 2);
+
+        let worker1_jobs = queue.filtered_jobs(None, Some(1), None, None, None);
+        assert_eq!(worker1_jobs.len(), 1);
+        assert_eq!(worker1_jobs[0].id, id1);
+    }
+
+    #[test]
+    fn test_filtered_jobs_by_worker_executed_by() {
+        let mut queue = JobQueue::new();
+        let job = Job::new("echo z".to_string());
+        let id = job.id;
+        queue.add_job(job);
+        // Mark as executed by worker 3 (no assigned_worker set)
+        queue.update_job_result(
+            &id,
+            JobStatus::Completed,
+            3,
+            Some(0),
+            None,
+            None,
+            Utc::now(),
+        );
+
+        let results = queue.filtered_jobs(None, Some(3), None, None, None);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, id);
+
+        // Worker 99 matches nothing
+        let empty = queue.filtered_jobs(None, Some(99), None, None, None);
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn test_filtered_jobs_command_substring_case_insensitive() {
+        let mut queue = JobQueue::new();
+        queue.add_job(Job::new("echo hello".to_string()));
+        queue.add_job(Job::new("sleep 30".to_string()));
+
+        // Uppercase filter should still match
+        let results = queue.filtered_jobs(None, None, Some("ECHO"), None, None);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].command, "echo hello");
+    }
+
+    #[test]
+    fn test_filtered_jobs_command_substring_no_match() {
+        let mut queue = JobQueue::new();
+        queue.add_job(Job::new("echo hello".to_string()));
+
+        let results = queue.filtered_jobs(None, None, Some("python"), None, None);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_filtered_jobs_created_after_ms() {
+        let mut queue = JobQueue::new();
+        let old_time = Utc::now() - chrono::Duration::hours(2);
+        let recent_time = Utc::now();
+
+        let old_job = Job::with_id(Uuid::new_v4(), "old cmd".to_string(), old_time);
+        let new_job = Job::with_id(Uuid::new_v4(), "new cmd".to_string(), recent_time);
+        let old_id = old_job.id;
+        queue.add_job(old_job);
+        queue.add_job(new_job);
+
+        // Cutoff 1 hour ago — old job should be excluded
+        let cutoff_ms = (Utc::now() - chrono::Duration::hours(1)).timestamp_millis();
+        let results = queue.filtered_jobs(None, None, None, Some(cutoff_ms), None);
+        assert_eq!(results.len(), 1);
+        assert_ne!(results[0].id, old_id);
+    }
+
+    #[test]
+    fn test_filtered_jobs_created_before_ms() {
+        let mut queue = JobQueue::new();
+        let old_time = Utc::now() - chrono::Duration::hours(2);
+        let recent_time = Utc::now();
+
+        let old_job = Job::with_id(Uuid::new_v4(), "old cmd".to_string(), old_time);
+        let new_job = Job::with_id(Uuid::new_v4(), "new cmd".to_string(), recent_time);
+        let new_id = new_job.id;
+        queue.add_job(old_job);
+        queue.add_job(new_job);
+
+        // Cutoff 1 hour ago — only old job was created before that
+        let cutoff_ms = (Utc::now() - chrono::Duration::hours(1)).timestamp_millis();
+        let results = queue.filtered_jobs(None, None, None, None, Some(cutoff_ms));
+        assert_eq!(results.len(), 1);
+        assert_ne!(results[0].id, new_id);
+    }
+
+    #[test]
+    fn test_filtered_jobs_combined_status_and_command() {
+        let mut queue = JobQueue::new();
+        let job1 = Job::new("echo pending".to_string());
+        let id1 = job1.id;
+        let job2 = Job::new("echo completed".to_string());
+        let id2 = job2.id;
+        let job3 = Job::new("sleep 10".to_string());
+        queue.add_job(job1);
+        queue.add_job(job2);
+        queue.add_job(job3);
+        queue.update_status(&id2, JobStatus::Completed, None, None);
+
+        // Pending + "echo" → only job1
+        let results = queue.filtered_jobs(Some(JobStatus::Pending), None, Some("echo"), None, None);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, id1);
+    }
+
+    #[test]
+    fn test_filtered_jobs_no_matches_returns_empty() {
+        let mut queue = JobQueue::new();
+        queue.add_job(Job::new("echo hello".to_string()));
+
+        // Filter by completed — nothing is completed
+        let results = queue.filtered_jobs(Some(JobStatus::Completed), None, None, None, None);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_filtered_jobs_sorted_chronologically() {
+        let mut queue = JobQueue::new();
+        let t1 = Utc::now() - chrono::Duration::seconds(10);
+        let t2 = Utc::now() - chrono::Duration::seconds(5);
+        let t3 = Utc::now();
+
+        let j1 = Job::with_id(Uuid::new_v4(), "echo 1".to_string(), t1);
+        let j2 = Job::with_id(Uuid::new_v4(), "echo 2".to_string(), t2);
+        let j3 = Job::with_id(Uuid::new_v4(), "echo 3".to_string(), t3);
+        let (id1, id2, id3) = (j1.id, j2.id, j3.id);
+        // Insert in reverse order to test sorting
+        queue.add_job(j3);
+        queue.add_job(j1);
+        queue.add_job(j2);
+
+        let results = queue.filtered_jobs(None, None, Some("echo"), None, None);
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].id, id1);
+        assert_eq!(results[1].id, id2);
+        assert_eq!(results[2].id, id3);
     }
 }

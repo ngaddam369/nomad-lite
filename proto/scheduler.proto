@@ -204,6 +204,16 @@ message ListJobsRequest {
     uint32 page_size = 1;
     // Page token from previous response for pagination
     string page_token = 2;
+    // Filter by job status; JOB_STATUS_UNSPECIFIED (0) means no filter
+    JobStatus status_filter = 3;
+    // Filter by assigned or executing worker node ID; 0 means no filter
+    uint64 worker_id_filter = 4;
+    // Filter by command substring (case-insensitive); empty means no filter
+    string command_filter = 5;
+    // Return only jobs created at or after this timestamp (ms since epoch); 0 means no lower bound
+    int64 created_after_ms = 6;
+    // Return only jobs created at or before this timestamp (ms since epoch); 0 means no upper bound
+    int64 created_before_ms = 7;
 }
 
 message StreamJobsRequest {

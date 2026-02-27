@@ -99,6 +99,38 @@ nomad-lite job list --page-size 50 --all  # Fetch all pages
 nomad-lite job list --stream              # Use streaming API
 ```
 
+**Filter jobs:**
+
+```bash
+# Filter by status
+nomad-lite job list --status pending
+nomad-lite job list --status completed
+
+# Filter by worker node
+nomad-lite job list --worker 2
+
+# Filter by command substring (case-insensitive)
+nomad-lite job list --command-substr echo
+
+# Filter by creation time range (Unix ms timestamps)
+nomad-lite job list --created-after-ms 1700000000000 --created-before-ms 1710000000000
+
+# Combine filters
+nomad-lite job list --status pending --command-substr echo --worker 1
+```
+
+Filter flags for `job list`:
+
+| Flag | Description |
+|------|-------------|
+| `--status STATUS` | Only jobs with this status: `pending`, `running`, `completed`, `failed`, `cancelled` |
+| `--worker WORKER_ID` | Only jobs whose `assigned_worker` or `executed_by` matches this node ID |
+| `--command-substr SUBSTR` | Case-insensitive substring match on the job command |
+| `--created-after-ms MS` | Only jobs created at or after this Unix timestamp (milliseconds) |
+| `--created-before-ms MS` | Only jobs created at or before this Unix timestamp (milliseconds) |
+
+> **Note:** Filters are not supported with `--stream` (only `--status` applies to the streaming API).
+
 **Get cluster status:**
 
 ```bash

@@ -389,12 +389,34 @@ impl SchedulerService for ClientService {
                 .map_err(|_| Status::invalid_argument("Invalid page token"))?
         };
 
-        let queue = self.job_queue.read().await;
-        let all_jobs = queue.all_jobs();
-        let total_count = all_jobs.len() as u32;
+        // Parse filter fields
+        let status_filter = {
+            let ps =
+                ProtoJobStatus::try_from(req.status_filter).unwrap_or(ProtoJobStatus::Unspecified);
+            if ps == ProtoJobStatus::Unspecified {
+                None
+            } else {
+                Some(proto_to_status(ps))
+            }
+        };
+        let worker_id_filter = (req.worker_id_filter != 0).then_some(req.worker_id_filter);
+        let command_filter =
+            (!req.command_filter.is_empty()).then_some(req.command_filter.as_str());
+        let created_after_ms = (req.created_after_ms != 0).then_some(req.created_after_ms);
+        let created_before_ms = (req.created_before_ms != 0).then_some(req.created_before_ms);
 
-        // Apply pagination
-        let jobs: Vec<JobInfo> = all_jobs
+        let queue = self.job_queue.read().await;
+        let matching = queue.filtered_jobs(
+            status_filter,
+            worker_id_filter,
+            command_filter,
+            created_after_ms,
+            created_before_ms,
+        );
+        let total_count = matching.len() as u32;
+
+        // Apply pagination over the filtered result set
+        let jobs: Vec<JobInfo> = matching
             .into_iter()
             .skip(offset)
             .take(page_size)
@@ -719,5 +741,18 @@ fn status_to_proto(status: &JobStatus) -> ProtoJobStatus {
         JobStatus::Completed => ProtoJobStatus::Completed,
         JobStatus::Failed => ProtoJobStatus::Failed,
         JobStatus::Cancelled => ProtoJobStatus::Cancelled,
+    }
+}
+
+fn proto_to_status(status: ProtoJobStatus) -> JobStatus {
+    match status {
+        ProtoJobStatus::Pending => JobStatus::Pending,
+        ProtoJobStatus::Running => JobStatus::Running,
+        ProtoJobStatus::Completed => JobStatus::Completed,
+        ProtoJobStatus::Failed => JobStatus::Failed,
+        ProtoJobStatus::Cancelled => JobStatus::Cancelled,
+        ProtoJobStatus::Unspecified => {
+            unreachable!("Unspecified must be filtered before conversion")
+        }
     }
 }
