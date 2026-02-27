@@ -11,19 +11,21 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{oneshot, RwLock};
+use tokio::sync::{oneshot, Mutex, RwLock};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use chrono::Utc;
 use nomad_lite::config::{NodeConfig, PeerConfig, SandboxConfig, TlsConfig};
 use nomad_lite::grpc::GrpcServer;
+use nomad_lite::proto::raft_service_client::RaftServiceClient;
 use nomad_lite::raft::node::RaftMessage;
 use nomad_lite::raft::state::{Command, RaftRole, Snapshot, SnapshotJob};
 use nomad_lite::raft::RaftNode;
 use nomad_lite::scheduler::assigner::JobAssigner;
 use nomad_lite::scheduler::{Job, JobQueue};
 use tokio_util::sync::CancellationToken;
+use tonic::transport::Channel;
 
 /// Minimum log length before compaction is triggered in tests
 const LOG_COMPACTION_THRESHOLD: usize = 1000;
@@ -63,6 +65,12 @@ pub struct TestNode {
     raft_handle: JoinHandle<()>,
     grpc_handle: JoinHandle<()>,
     scheduler_handle: JoinHandle<()>,
+    // Shared handles into RaftNode's peer maps (for partition simulation).
+    peers_handle: Arc<Mutex<HashMap<u64, RaftServiceClient<Channel>>>>,
+    heartbeat_peers_handle: Arc<Mutex<HashMap<u64, RaftServiceClient<Channel>>>>,
+    // Stash for disconnected clients while a partition is active.
+    disconnected_peers: Arc<Mutex<HashMap<u64, RaftServiceClient<Channel>>>>,
+    disconnected_heartbeat_peers: Arc<Mutex<HashMap<u64, RaftServiceClient<Channel>>>>,
 }
 
 impl TestNode {
@@ -86,6 +94,34 @@ impl TestNode {
     #[allow(dead_code)]
     pub async fn leader_id(&self) -> Option<u64> {
         self.raft_node.state.read().await.leader_id
+    }
+
+    /// Move a peer's clients to the disconnected stash (simulates a network partition).
+    pub async fn disconnect_peer(&self, peer_id: u64) {
+        let mut peers = self.peers_handle.lock().await;
+        let mut disconnected = self.disconnected_peers.lock().await;
+        if let Some(client) = peers.remove(&peer_id) {
+            disconnected.insert(peer_id, client);
+        }
+        let mut hb_peers = self.heartbeat_peers_handle.lock().await;
+        let mut hb_disconnected = self.disconnected_heartbeat_peers.lock().await;
+        if let Some(client) = hb_peers.remove(&peer_id) {
+            hb_disconnected.insert(peer_id, client);
+        }
+    }
+
+    /// Restore a peer's clients from the disconnected stash (heals a partition).
+    pub async fn reconnect_peer(&self, peer_id: u64) {
+        let mut peers = self.peers_handle.lock().await;
+        let mut disconnected = self.disconnected_peers.lock().await;
+        if let Some(client) = disconnected.remove(&peer_id) {
+            peers.insert(peer_id, client);
+        }
+        let mut hb_peers = self.heartbeat_peers_handle.lock().await;
+        let mut hb_disconnected = self.disconnected_heartbeat_peers.lock().await;
+        if let Some(client) = hb_disconnected.remove(&peer_id) {
+            hb_peers.insert(peer_id, client);
+        }
     }
 }
 
@@ -154,6 +190,8 @@ impl TestCluster {
 
         let (raft_node, raft_rx) = RaftNode::new(config.clone(), None);
         let raft_node = Arc::new(raft_node);
+        let peers_handle = raft_node.peers_handle();
+        let heartbeat_peers_handle = raft_node.heartbeat_peers_handle();
         let job_queue = Arc::new(RwLock::new(JobQueue::new()));
 
         // Spawn Raft event loop
@@ -198,6 +236,10 @@ impl TestCluster {
             raft_handle,
             grpc_handle,
             scheduler_handle,
+            peers_handle,
+            heartbeat_peers_handle,
+            disconnected_peers: Arc::new(Mutex::new(HashMap::new())),
+            disconnected_heartbeat_peers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -587,14 +629,14 @@ impl TestCluster {
         for &node_a in group_a {
             if let Some(node) = self.nodes.get(&node_a) {
                 for &node_b in group_b {
-                    node.raft_node.disconnect_peer(node_b).await;
+                    node.disconnect_peer(node_b).await;
                 }
             }
         }
         for &node_b in group_b {
             if let Some(node) = self.nodes.get(&node_b) {
                 for &node_a in group_a {
-                    node.raft_node.disconnect_peer(node_a).await;
+                    node.disconnect_peer(node_a).await;
                 }
             }
         }
@@ -605,14 +647,14 @@ impl TestCluster {
         for &node_a in group_a {
             if let Some(node) = self.nodes.get(&node_a) {
                 for &node_b in group_b {
-                    node.raft_node.reconnect_peer(node_b).await;
+                    node.reconnect_peer(node_b).await;
                 }
             }
         }
         for &node_b in group_b {
             if let Some(node) = self.nodes.get(&node_b) {
                 for &node_a in group_a {
-                    node.raft_node.reconnect_peer(node_a).await;
+                    node.reconnect_peer(node_a).await;
                 }
             }
         }

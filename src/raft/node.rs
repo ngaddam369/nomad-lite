@@ -58,13 +58,9 @@ pub struct RaftNode {
     pub state: Arc<RwLock<RaftState>>,
     config: NodeConfig,
     peers: Arc<Mutex<HashMap<u64, RaftServiceClient<Channel>>>>,
-    /// Peers temporarily disconnected to simulate network partitions (for testing)
-    disconnected_peers: Arc<Mutex<HashMap<u64, RaftServiceClient<Channel>>>>,
     /// Dedicated clients used only for sending empty heartbeat AppendEntries.
     /// Separate TCP connections ensure large replication payloads never block heartbeats.
     heartbeat_peers: Arc<Mutex<HashMap<u64, RaftServiceClient<Channel>>>>,
-    /// Heartbeat clients temporarily removed during network partition simulation.
-    disconnected_heartbeat_peers: Arc<Mutex<HashMap<u64, RaftServiceClient<Channel>>>>,
     message_tx: mpsc::Sender<RaftMessage>,
     last_heartbeat: Arc<RwLock<Instant>>,
     commit_notify_tx: watch::Sender<u64>,
@@ -127,9 +123,7 @@ impl RaftNode {
             state: Arc::new(RwLock::new(raft_state)),
             config,
             peers: Arc::new(Mutex::new(HashMap::new())),
-            disconnected_peers: Arc::new(Mutex::new(HashMap::new())),
             heartbeat_peers: Arc::new(Mutex::new(HashMap::new())),
-            disconnected_heartbeat_peers: Arc::new(Mutex::new(HashMap::new())),
             message_tx,
             last_heartbeat: Arc::new(RwLock::new(Instant::now())),
             commit_notify_tx,
@@ -313,36 +307,18 @@ impl RaftNode {
             .all(|p| peers.contains_key(&p.node_id))
     }
 
-    /// Simulate disconnecting from a specific peer (moves client to disconnected_peers).
-    /// Used for network partition testing.
-    pub async fn disconnect_peer(&self, peer_id: u64) {
-        let mut peers = self.peers.lock().await;
-        let mut disconnected = self.disconnected_peers.lock().await;
-        if let Some(client) = peers.remove(&peer_id) {
-            disconnected.insert(peer_id, client);
-        }
-        // Also cut the heartbeat channel so no keep-alives leak through during a partition.
-        let mut hb_peers = self.heartbeat_peers.lock().await;
-        let mut hb_disconnected = self.disconnected_heartbeat_peers.lock().await;
-        if let Some(client) = hb_peers.remove(&peer_id) {
-            hb_disconnected.insert(peer_id, client);
-        }
+    /// Returns a shared handle to the live data-channel peer connections.
+    /// Only intended for use by the test harness for partition simulation.
+    #[doc(hidden)]
+    pub fn peers_handle(&self) -> Arc<Mutex<HashMap<u64, RaftServiceClient<Channel>>>> {
+        self.peers.clone()
     }
 
-    /// Reconnect a previously disconnected peer.
-    /// Used for network partition healing in tests.
-    pub async fn reconnect_peer(&self, peer_id: u64) {
-        let mut peers = self.peers.lock().await;
-        let mut disconnected = self.disconnected_peers.lock().await;
-        if let Some(client) = disconnected.remove(&peer_id) {
-            peers.insert(peer_id, client);
-        }
-        // Restore the heartbeat channel as well.
-        let mut hb_peers = self.heartbeat_peers.lock().await;
-        let mut hb_disconnected = self.disconnected_heartbeat_peers.lock().await;
-        if let Some(client) = hb_disconnected.remove(&peer_id) {
-            hb_peers.insert(peer_id, client);
-        }
+    /// Returns a shared handle to the heartbeat-channel peer connections.
+    /// Only intended for use by the test harness for partition simulation.
+    #[doc(hidden)]
+    pub fn heartbeat_peers_handle(&self) -> Arc<Mutex<HashMap<u64, RaftServiceClient<Channel>>>> {
+        self.heartbeat_peers.clone()
     }
 
     /// Run the Raft node main loop
