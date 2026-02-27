@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -25,15 +26,45 @@ use crate::raft::{Command, RaftNode};
 use crate::scheduler::{Job, JobQueue, JobStatus};
 use crate::tls::TlsIdentity;
 
+/// Generic cached connection pool keyed by node ID.
+struct ClientPool<C> {
+    pool: Mutex<HashMap<u64, C>>,
+}
+
+impl<C: Clone> ClientPool<C> {
+    fn new() -> Self {
+        Self {
+            pool: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Return a cached client for `node_id`, calling `make` on a cache miss.
+    /// The pool lock is held across `make` to prevent duplicate connections
+    /// (matching the original per-method lock behaviour).
+    async fn get<F, Fut>(&self, node_id: u64, make: F) -> Result<C, Status>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<C, Status>>,
+    {
+        let mut pool = self.pool.lock().await;
+        if let Some(client) = pool.get(&node_id) {
+            return Ok(client.clone());
+        }
+        let client = make().await?;
+        pool.insert(node_id, client.clone());
+        Ok(client)
+    }
+}
+
 /// gRPC service for client-facing API
 pub struct ClientService {
     config: NodeConfig,
     raft_node: Arc<RaftNode>,
     job_queue: Arc<RwLock<JobQueue>>,
     /// Connection pool for forwarding requests to other nodes
-    client_pool: Arc<Mutex<HashMap<u64, SchedulerServiceClient<Channel>>>>,
+    client_pool: ClientPool<SchedulerServiceClient<Channel>>,
     /// Connection pool for internal service requests (fetching job output)
-    internal_pool: Arc<Mutex<HashMap<u64, InternalServiceClient<Channel>>>>,
+    internal_pool: ClientPool<InternalServiceClient<Channel>>,
     /// TLS identity for secure connections to other nodes
     tls_identity: Option<TlsIdentity>,
     /// Whether this node is draining (rejecting new jobs, preparing for shutdown)
@@ -52,8 +83,8 @@ impl ClientService {
             config,
             raft_node,
             job_queue,
-            client_pool: Arc::new(Mutex::new(HashMap::new())),
-            internal_pool: Arc::new(Mutex::new(HashMap::new())),
+            client_pool: ClientPool::new(),
+            internal_pool: ClientPool::new(),
             tls_identity,
             draining,
         }
@@ -85,30 +116,26 @@ impl ClientService {
             .map_err(|e| Status::unavailable(format!("Failed to connect to {}: {}", peer_addr, e)))
     }
 
-    /// Get or create a cached connection to a peer node
-    async fn get_client(&self, node_id: u64) -> Result<SchedulerServiceClient<Channel>, Status> {
-        let mut pool = self.client_pool.lock().await;
-
-        // Return cached client if available
-        if let Some(client) = pool.get(&node_id) {
-            return Ok(client.clone());
-        }
-
-        // Find peer address
-        let peer_addr = self
-            .config
+    /// Look up the network address of a peer node by ID.
+    #[allow(clippy::result_large_err)]
+    fn peer_addr(&self, node_id: u64) -> Result<String, Status> {
+        self.config
             .peers
             .iter()
             .find(|p| p.node_id == node_id)
             .map(|p| p.addr.clone())
-            .ok_or_else(|| Status::not_found(format!("Unknown node {}", node_id)))?;
+            .ok_or_else(|| Status::not_found(format!("Unknown node {}", node_id)))
+    }
 
-        // Create new connection with TLS if configured
-        let channel = self.create_channel(&peer_addr).await?;
-        let client = SchedulerServiceClient::new(channel);
-
-        pool.insert(node_id, client.clone());
-        Ok(client)
+    /// Get or create a cached connection to a peer node
+    async fn get_client(&self, node_id: u64) -> Result<SchedulerServiceClient<Channel>, Status> {
+        self.client_pool
+            .get(node_id, || async {
+                Ok(SchedulerServiceClient::new(
+                    self.create_channel(&self.peer_addr(node_id)?).await?,
+                ))
+            })
+            .await
     }
 
     /// Get or create a cached internal service connection to a peer node
@@ -116,26 +143,13 @@ impl ClientService {
         &self,
         node_id: u64,
     ) -> Result<InternalServiceClient<Channel>, Status> {
-        let mut pool = self.internal_pool.lock().await;
-
-        if let Some(client) = pool.get(&node_id) {
-            return Ok(client.clone());
-        }
-
-        let peer_addr = self
-            .config
-            .peers
-            .iter()
-            .find(|p| p.node_id == node_id)
-            .map(|p| p.addr.clone())
-            .ok_or_else(|| Status::not_found(format!("Unknown node {}", node_id)))?;
-
-        // Create new connection with TLS if configured
-        let channel = self.create_channel(&peer_addr).await?;
-        let client = InternalServiceClient::new(channel);
-
-        pool.insert(node_id, client.clone());
-        Ok(client)
+        self.internal_pool
+            .get(node_id, || async {
+                Ok(InternalServiceClient::new(
+                    self.create_channel(&self.peer_addr(node_id)?).await?,
+                ))
+            })
+            .await
     }
 
     /// Returns a not-leader Status with the leader's network address when known.
