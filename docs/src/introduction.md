@@ -11,6 +11,8 @@
 - **Docker Sandboxing** - Jobs run in isolated containers with restricted capabilities
 - **Web Dashboard** - Real-time monitoring and job management
 - **gRPC + REST APIs** - Type-safe client communication
+- **Job Cancellation** - Cancel pending or running jobs via CLI, gRPC, or REST dashboard
+- **Health Endpoints** - `/health/live` (process alive) and `/health/ready` (leader known) for orchestrator integration
 - **Graceful Shutdown** - SIGTERM/SIGINT handling with drain period for in-flight work
 - **Leader Draining & Transfer** - Voluntary leadership transfer and node draining for safe maintenance
 - **Batch Replication** - Multiple job status updates batched into a single Raft log entry for reduced consensus overhead

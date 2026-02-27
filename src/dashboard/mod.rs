@@ -13,7 +13,6 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tonic::transport::Endpoint;
-use tower_http::cors::{Any, CorsLayer};
 
 use crate::proto::scheduler_service_client::SchedulerServiceClient;
 use crate::proto::GetClusterStatusRequest;
@@ -121,11 +120,6 @@ pub async fn run_dashboard(
     state: DashboardState,
     shutdown_token: CancellationToken,
 ) {
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
-
     let app = Router::new()
         .route("/", get(index_handler))
         .route("/api/cluster", get(cluster_status_handler))
@@ -134,7 +128,6 @@ pub async fn run_dashboard(
         .route("/api/jobs/:id", delete(cancel_job_handler))
         .route("/health/live", get(live_handler))
         .route("/health/ready", get(ready_handler))
-        .layer(cors)
         .with_state(state);
 
     tracing::info!(addr = %addr, "Starting dashboard server");

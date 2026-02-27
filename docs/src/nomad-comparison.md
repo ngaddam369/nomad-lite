@@ -71,7 +71,7 @@ a node running one heavy job looks the same as one running one trivial job.
 | **Job timeouts** | `kill_timeout`, `max_kill_timeout` per task | Not implemented |
 | **Retry policy** | `restart` stanza: attempts, delay, mode | Not implemented |
 | **Reschedule on node loss** | `reschedule` stanza with backoff | Not implemented |
-| **Job cancellation** | `nomad job stop` | Not implemented |
+| **Job cancellation** | `nomad job stop` | ✅ `nomad-lite job cancel <job-id>` |
 | **Job priorities** | 1–100 integer field | Not implemented |
 | **Parameterized jobs** | `parameterized` stanza; dispatch via CLI/API | Not implemented |
 | **Periodic jobs** | Cron expression in job spec | Not implemented |
@@ -123,7 +123,7 @@ not.
 |---|---|---|
 | **Metrics** | Prometheus endpoint (`/v1/metrics`) | Not implemented |
 | **Distributed tracing** | OpenTelemetry support | Not implemented |
-| **Health endpoints** | `/v1/agent/health` (live + ready) | Not implemented |
+| **Health endpoints** | `/v1/agent/health` (live + ready) | ✅ `/health/live` + `/health/ready` |
 | **Audit logging** | Immutable audit log (Enterprise) | Not implemented |
 | **Web UI** | Full job and cluster management UI | ✅ Basic dashboard (status + job list) |
 | **Log streaming** | `nomad alloc logs -f` | Not implemented |
@@ -173,11 +173,12 @@ not.
    ✅  Job output stored on executing node, fetched on demand
 
  Client-facing
-   ✅  SubmitJob / GetJobStatus / ListJobs (paginated) / StreamJobs
+   ✅  SubmitJob / CancelJob / GetJobStatus / ListJobs (paginated) / StreamJobs
    ✅  GetClusterStatus
    ✅  GetRaftLogEntries (debug)
    ✅  CLI with automatic leader redirect
    ✅  Web dashboard
+   ✅  /health/live + /health/ready endpoints
 
  Persistence
    ✅  State persistence (RocksDB-backed Raft log + snapshot via --data-dir)
@@ -191,6 +192,6 @@ not.
    ⬜  Resource-aware placement
    ⬜  Job dependency graphs (DAG)
    ⬜  Shared output storage
-   ⬜  Prometheus metrics / OpenTelemetry tracing / health endpoints
+   ⬜  Prometheus metrics / OpenTelemetry tracing
    ⬜  Authorization (ACL tokens)
 ```
