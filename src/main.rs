@@ -148,6 +148,20 @@ enum OutputFormat {
     Json,
 }
 
+/// Render output in the requested format.
+/// Serialises `data` as pretty JSON, or calls `table` for table output.
+fn render<T: Serialize>(
+    fmt: &OutputFormat,
+    data: &T,
+    table: impl FnOnce(),
+) -> Result<(), Box<dyn std::error::Error>> {
+    match fmt {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(data)?),
+        OutputFormat::Table => table(),
+    }
+    Ok(())
+}
+
 // =============================================================================
 // Job Commands
 // =============================================================================
@@ -602,19 +616,15 @@ async fn handle_job_submit(
     {
         Ok(response) => {
             let resp = response.into_inner();
-            match output_format {
-                OutputFormat::Json => {
-                    let output = JobSubmitOutput {
-                        job_id: resp.job_id,
-                        created_at_ms: resp.created_at_ms,
-                    };
-                    println!("{}", serde_json::to_string_pretty(&output)?);
-                }
-                OutputFormat::Table => {
-                    println!("Job submitted successfully!");
-                    println!("Job ID: {}", resp.job_id);
-                }
-            }
+            let job_id = resp.job_id.clone();
+            let output = JobSubmitOutput {
+                job_id: resp.job_id,
+                created_at_ms: resp.created_at_ms,
+            };
+            render(output_format, &output, || {
+                println!("Job submitted successfully!");
+                println!("Job ID: {}", job_id);
+            })?;
         }
         Err(status) => {
             let msg = status.message().to_owned();
@@ -636,19 +646,15 @@ async fn handle_job_submit(
                     {
                         Ok(response) => {
                             let resp = response.into_inner();
-                            match output_format {
-                                OutputFormat::Json => {
-                                    let output = JobSubmitOutput {
-                                        job_id: resp.job_id,
-                                        created_at_ms: resp.created_at_ms,
-                                    };
-                                    println!("{}", serde_json::to_string_pretty(&output)?);
-                                }
-                                OutputFormat::Table => {
-                                    println!("Job submitted successfully!");
-                                    println!("Job ID: {}", resp.job_id);
-                                }
-                            }
+                            let job_id = resp.job_id.clone();
+                            let output = JobSubmitOutput {
+                                job_id: resp.job_id,
+                                created_at_ms: resp.created_at_ms,
+                            };
+                            render(output_format, &output, || {
+                                println!("Job submitted successfully!");
+                                println!("Job ID: {}", job_id);
+                            })?;
                             return Ok(());
                         }
                         Err(e) => {
@@ -686,36 +692,27 @@ async fn handle_job_cancel(
         message: String,
     }
 
-    let print_response = |resp: nomad_lite::proto::CancelJobResponse,
-                          fmt: &OutputFormat|
-     -> Result<(), Box<dyn std::error::Error>> {
-        match fmt {
-            OutputFormat::Json => {
-                let output = CancelOutput {
-                    success: resp.success,
-                    message: resp.message.clone(),
-                };
-                println!("{}", serde_json::to_string_pretty(&output)?);
-            }
-            OutputFormat::Table => {
-                if resp.success {
-                    println!("{}", resp.message);
-                } else {
-                    eprintln!("Cancel failed: {}", resp.message);
-                    std::process::exit(1);
-                }
-            }
-        }
-        Ok(())
-    };
-
     match client
         .cancel_job(CancelJobRequest {
             job_id: job_id.clone(),
         })
         .await
     {
-        Ok(response) => print_response(response.into_inner(), output_format)?,
+        Ok(response) => {
+            let resp = response.into_inner();
+            let output = CancelOutput {
+                success: resp.success,
+                message: resp.message,
+            };
+            render(output_format, &output, || {
+                if output.success {
+                    println!("{}", output.message);
+                } else {
+                    eprintln!("Cancel failed: {}", output.message);
+                    std::process::exit(1);
+                }
+            })?;
+        }
         Err(status) => {
             let msg = status.message().to_owned();
             if msg.contains("Not the leader") {
@@ -730,7 +727,21 @@ async fn handle_job_cancel(
                     .await?;
                     let mut leader_client = SchedulerServiceClient::new(channel);
                     match leader_client.cancel_job(CancelJobRequest { job_id }).await {
-                        Ok(response) => print_response(response.into_inner(), output_format)?,
+                        Ok(response) => {
+                            let resp = response.into_inner();
+                            let output = CancelOutput {
+                                success: resp.success,
+                                message: resp.message,
+                            };
+                            render(output_format, &output, || {
+                                if output.success {
+                                    println!("{}", output.message);
+                                } else {
+                                    eprintln!("Cancel failed: {}", output.message);
+                                    std::process::exit(1);
+                                }
+                            })?;
+                        }
                         Err(e) => {
                             eprintln!("Error: Cancel failed after redirect: {}", e.message());
                             std::process::exit(1);
@@ -761,47 +772,42 @@ async fn handle_job_status(
         .await?
         .into_inner();
 
-    match output_format {
-        OutputFormat::Json => {
-            let output = JobStatusOutput {
-                job_id: response.job_id,
-                status: job_status_to_string(response.status),
-                output: response.output,
-                error: response.error,
-                assigned_worker: response.assigned_worker,
-                executed_by: response.executed_by,
-                exit_code: response.exit_code,
-                created_at_ms: response.created_at_ms,
-                completed_at_ms: response.completed_at_ms,
-            };
-            println!("{}", serde_json::to_string_pretty(&output)?);
+    let output = JobStatusOutput {
+        job_id: response.job_id,
+        status: job_status_to_string(response.status),
+        output: response.output,
+        error: response.error,
+        assigned_worker: response.assigned_worker,
+        executed_by: response.executed_by,
+        exit_code: response.exit_code,
+        created_at_ms: response.created_at_ms,
+        completed_at_ms: response.completed_at_ms,
+    };
+    render(output_format, &output, || {
+        println!("Job ID:          {}", output.job_id);
+        println!("Status:          {}", output.status);
+        if let Some(exit_code) = output.exit_code {
+            println!("Exit Code:       {}", exit_code);
         }
-        OutputFormat::Table => {
-            println!("Job ID:          {}", response.job_id);
-            println!("Status:          {}", job_status_to_string(response.status));
-            if let Some(exit_code) = response.exit_code {
-                println!("Exit Code:       {}", exit_code);
-            }
-            if response.assigned_worker > 0 {
-                println!("Assigned Worker: {}", response.assigned_worker);
-            }
-            if response.executed_by > 0 {
-                println!("Executed By:     {}", response.executed_by);
-            }
-            if !response.output.is_empty() {
-                println!("Output:");
-                for line in response.output.lines() {
-                    println!("  {}", line);
-                }
-            }
-            if !response.error.is_empty() {
-                println!("Error:");
-                for line in response.error.lines() {
-                    println!("  {}", line);
-                }
+        if output.assigned_worker > 0 {
+            println!("Assigned Worker: {}", output.assigned_worker);
+        }
+        if output.executed_by > 0 {
+            println!("Executed By:     {}", output.executed_by);
+        }
+        if !output.output.is_empty() {
+            println!("Output:");
+            for line in output.output.lines() {
+                println!("  {}", line);
             }
         }
-    }
+        if !output.error.is_empty() {
+            println!("Error:");
+            for line in output.error.lines() {
+                println!("  {}", line);
+            }
+        }
+    })?;
     Ok(())
 }
 
@@ -917,47 +923,46 @@ async fn handle_job_list(
         }
     }
 
-    match output_format {
-        OutputFormat::Json => {
-            let output = JobListOutput {
-                jobs: all_jobs,
-                total_count,
-                has_more,
-            };
-            println!("{}", serde_json::to_string_pretty(&output)?);
-        }
-        OutputFormat::Table => {
-            if all_jobs.is_empty() {
-                println!("No jobs found.");
-            } else {
-                println!("{:<38} {:<12} {:<8} COMMAND", "JOB ID", "STATUS", "WORKER");
-                println!("{}", "-".repeat(78));
+    let output = JobListOutput {
+        jobs: all_jobs,
+        total_count,
+        has_more,
+    };
+    render(output_format, &output, || {
+        if output.jobs.is_empty() {
+            println!("No jobs found.");
+        } else {
+            println!("{:<38} {:<12} {:<8} COMMAND", "JOB ID", "STATUS", "WORKER");
+            println!("{}", "-".repeat(78));
 
-                for job in &all_jobs {
-                    let worker = if job.assigned_worker > 0 {
-                        job.assigned_worker.to_string()
-                    } else {
-                        "-".to_string()
-                    };
-                    // Truncate command if too long
-                    let cmd_display = if job.command.len() > 20 {
-                        format!("{}...", &job.command[..17])
-                    } else {
-                        job.command.clone()
-                    };
-                    println!(
-                        "{:<38} {:<12} {:<8} {}",
-                        job.job_id, job.status, worker, cmd_display
-                    );
-                }
-                println!();
-                println!("Showing {} of {} jobs", all_jobs.len(), total_count);
-                if has_more {
-                    println!("(Use --all to fetch all pages)");
-                }
+            for job in &output.jobs {
+                let worker = if job.assigned_worker > 0 {
+                    job.assigned_worker.to_string()
+                } else {
+                    "-".to_string()
+                };
+                // Truncate command if too long
+                let cmd_display = if job.command.len() > 20 {
+                    format!("{}...", &job.command[..17])
+                } else {
+                    job.command.clone()
+                };
+                println!(
+                    "{:<38} {:<12} {:<8} {}",
+                    job.job_id, job.status, worker, cmd_display
+                );
+            }
+            println!();
+            println!(
+                "Showing {} of {} jobs",
+                output.jobs.len(),
+                output.total_count
+            );
+            if output.has_more {
+                println!("(Use --all to fetch all pages)");
             }
         }
-    }
+    })?;
     Ok(())
 }
 
@@ -970,42 +975,37 @@ async fn handle_cluster_status(
         .await?
         .into_inner();
 
-    match output_format {
-        OutputFormat::Json => {
-            let output = ClusterStatusOutput {
-                current_term: response.current_term,
-                leader_id: response.leader_id,
-                nodes: response
-                    .nodes
-                    .into_iter()
-                    .map(|n| NodeInfoOutput {
-                        node_id: n.node_id,
-                        address: n.address,
-                        is_alive: n.is_alive,
-                    })
-                    .collect(),
-            };
-            println!("{}", serde_json::to_string_pretty(&output)?);
+    let output = ClusterStatusOutput {
+        current_term: response.current_term,
+        leader_id: response.leader_id,
+        nodes: response
+            .nodes
+            .into_iter()
+            .map(|n| NodeInfoOutput {
+                node_id: n.node_id,
+                address: n.address,
+                is_alive: n.is_alive,
+            })
+            .collect(),
+    };
+    render(output_format, &output, || {
+        println!("Cluster Status");
+        println!("{}", "=".repeat(40));
+        println!("Term:   {}", output.current_term);
+        println!("Leader: Node {}", output.leader_id);
+        println!();
+        println!("Nodes:");
+        println!("{:<8} {:<25} STATUS", "ID", "ADDRESS");
+        println!("{}", "-".repeat(45));
+        for node in &output.nodes {
+            let status = if node.is_alive { "alive" } else { "dead" };
+            let status_icon = if node.is_alive { "[+]" } else { "[-]" };
+            println!(
+                "{:<8} {:<25} {} {}",
+                node.node_id, node.address, status_icon, status
+            );
         }
-        OutputFormat::Table => {
-            println!("Cluster Status");
-            println!("{}", "=".repeat(40));
-            println!("Term:   {}", response.current_term);
-            println!("Leader: Node {}", response.leader_id);
-            println!();
-            println!("Nodes:");
-            println!("{:<8} {:<25} STATUS", "ID", "ADDRESS");
-            println!("{}", "-".repeat(45));
-            for node in response.nodes {
-                let status = if node.is_alive { "alive" } else { "dead" };
-                let status_icon = if node.is_alive { "[+]" } else { "[-]" };
-                println!(
-                    "{:<8} {:<25} {} {}",
-                    node.node_id, node.address, status_icon, status
-                );
-            }
-        }
-    }
+    })?;
     Ok(())
 }
 
@@ -1036,64 +1036,57 @@ async fn handle_log_list(
         })
         .collect();
 
-    match output_format {
-        OutputFormat::Json => {
-            let output = RaftLogOutput {
-                entries,
-                commit_index: response.commit_index,
-                last_log_index: response.last_log_index,
-                first_available_index: response.first_available_index,
-            };
-            println!("{}", serde_json::to_string_pretty(&output)?);
-        }
-        OutputFormat::Table => {
-            if entries.is_empty() {
-                println!("No log entries found.");
-            } else {
-                println!("Raft Log Entries");
-                println!("{}", "=".repeat(80));
-                if response.first_available_index > 1 {
-                    println!(
-                        "First Available: {}  |  Commit Index: {}  |  Last Log Index: {}",
-                        response.first_available_index,
-                        response.commit_index,
-                        response.last_log_index
-                    );
-                    println!(
-                        "(Entries 1-{} were compacted into a snapshot)",
-                        response.first_available_index - 1
-                    );
-                } else {
-                    println!(
-                        "Commit Index: {}  |  Last Log Index: {}",
-                        response.commit_index, response.last_log_index
-                    );
-                }
-                println!();
+    let output = RaftLogOutput {
+        entries,
+        commit_index: response.commit_index,
+        last_log_index: response.last_log_index,
+        first_available_index: response.first_available_index,
+    };
+    render(output_format, &output, || {
+        if output.entries.is_empty() {
+            println!("No log entries found.");
+        } else {
+            println!("Raft Log Entries");
+            println!("{}", "=".repeat(80));
+            if output.first_available_index > 1 {
                 println!(
-                    "{:<6} {:<6} {:<10} {:<20} DETAILS",
-                    "INDEX", "TERM", "COMMITTED", "TYPE"
+                    "First Available: {}  |  Commit Index: {}  |  Last Log Index: {}",
+                    output.first_available_index, output.commit_index, output.last_log_index
                 );
-                println!("{}", "-".repeat(80));
-
-                for entry in &entries {
-                    let committed = if entry.is_committed { "yes" } else { "no" };
-                    // Truncate details if too long
-                    let details = if entry.command_details.len() > 30 {
-                        format!("{}...", &entry.command_details[..27])
-                    } else {
-                        entry.command_details.clone()
-                    };
-                    println!(
-                        "{:<6} {:<6} {:<10} {:<20} {}",
-                        entry.index, entry.term, committed, entry.command_type, details
-                    );
-                }
-                println!();
-                println!("Showing {} entries", entries.len());
+                println!(
+                    "(Entries 1-{} were compacted into a snapshot)",
+                    output.first_available_index - 1
+                );
+            } else {
+                println!(
+                    "Commit Index: {}  |  Last Log Index: {}",
+                    output.commit_index, output.last_log_index
+                );
             }
+            println!();
+            println!(
+                "{:<6} {:<6} {:<10} {:<20} DETAILS",
+                "INDEX", "TERM", "COMMITTED", "TYPE"
+            );
+            println!("{}", "-".repeat(80));
+
+            for entry in &output.entries {
+                let committed = if entry.is_committed { "yes" } else { "no" };
+                // Truncate details if too long
+                let details = if entry.command_details.len() > 30 {
+                    format!("{}...", &entry.command_details[..27])
+                } else {
+                    entry.command_details.clone()
+                };
+                println!(
+                    "{:<6} {:<6} {:<10} {:<20} {}",
+                    entry.index, entry.term, committed, entry.command_type, details
+                );
+            }
+            println!();
+            println!("Showing {} entries", output.entries.len());
         }
-    }
+    })?;
     Ok(())
 }
 
@@ -1109,25 +1102,20 @@ async fn handle_transfer_leader(
         .await?
         .into_inner();
 
-    match output_format {
-        OutputFormat::Json => {
-            let output = TransferLeaderOutput {
-                success: response.success,
-                message: response.message.clone(),
-                new_leader_id: response.new_leader_id,
-            };
-            println!("{}", serde_json::to_string_pretty(&output)?);
+    let output = TransferLeaderOutput {
+        success: response.success,
+        message: response.message,
+        new_leader_id: response.new_leader_id,
+    };
+    render(output_format, &output, || {
+        if output.success {
+            println!("Leadership transferred successfully!");
+            println!("New leader: Node {}", output.new_leader_id);
+        } else {
+            eprintln!("Transfer failed: {}", output.message);
+            std::process::exit(1);
         }
-        OutputFormat::Table => {
-            if response.success {
-                println!("Leadership transferred successfully!");
-                println!("New leader: Node {}", response.new_leader_id);
-            } else {
-                eprintln!("Transfer failed: {}", response.message);
-                std::process::exit(1);
-            }
-        }
-    }
+    })?;
     Ok(())
 }
 
@@ -1138,24 +1126,19 @@ async fn handle_drain(
     eprintln!("Draining node...");
     let response = client.drain_node(DrainNodeRequest {}).await?.into_inner();
 
-    match output_format {
-        OutputFormat::Json => {
-            let output = DrainOutput {
-                success: response.success,
-                message: response.message.clone(),
-            };
-            println!("{}", serde_json::to_string_pretty(&output)?);
+    let output = DrainOutput {
+        success: response.success,
+        message: response.message,
+    };
+    render(output_format, &output, || {
+        if output.success {
+            println!("Node drained successfully.");
+            println!("{}", output.message);
+        } else {
+            eprintln!("Drain failed: {}", output.message);
+            std::process::exit(1);
         }
-        OutputFormat::Table => {
-            if response.success {
-                println!("Node drained successfully.");
-                println!("{}", response.message);
-            } else {
-                eprintln!("Drain failed: {}", response.message);
-                std::process::exit(1);
-            }
-        }
-    }
+    })?;
     Ok(())
 }
 
