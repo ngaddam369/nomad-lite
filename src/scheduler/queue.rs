@@ -32,13 +32,22 @@ impl JobQueue {
         }
     }
 
-    /// Add a new job to the queue. Returns false if the queue is at capacity.
+    /// Add a new job to the queue. Returns false if the active-job limit is reached.
+    /// Completed and failed jobs do not count toward the limit.
     pub fn add_job(&mut self, job: Job) -> bool {
-        if self.jobs.len() >= self.max_jobs {
+        if self.active_job_count() >= self.max_jobs {
             return false;
         }
         self.jobs.insert(job.id, job);
         true
+    }
+
+    /// Number of jobs that are Pending or Running (i.e. consuming a capacity slot).
+    fn active_job_count(&self) -> usize {
+        self.jobs
+            .values()
+            .filter(|j| matches!(j.status, JobStatus::Pending | JobStatus::Running))
+            .count()
     }
 
     /// Get a job by ID
@@ -66,6 +75,13 @@ impl JobQueue {
             }
             if error.is_some() {
                 job.error = error;
+            }
+            // Ensure terminal jobs always carry a completion timestamp so that
+            // TTL-based eviction in cleanup_finished_jobs has a value to compare.
+            if matches!(status, JobStatus::Completed | JobStatus::Failed)
+                && job.completed_at.is_none()
+            {
+                job.completed_at = Some(Utc::now());
             }
             true
         } else {
@@ -173,11 +189,19 @@ impl JobQueue {
             .collect()
     }
 
-    /// Remove completed and failed jobs from the queue. Returns the number of jobs removed.
-    pub fn cleanup_finished_jobs(&mut self) -> usize {
+    /// Remove completed and failed jobs whose `completed_at` is older than
+    /// `retention_secs`. Jobs with no `completed_at` timestamp (shouldn't
+    /// happen in practice) are retained. Returns the number of jobs removed.
+    pub fn cleanup_finished_jobs(&mut self, retention_secs: u64) -> usize {
         let before = self.jobs.len();
-        self.jobs
-            .retain(|_, job| job.status != JobStatus::Completed && job.status != JobStatus::Failed);
+        let cutoff = Utc::now() - chrono::Duration::seconds(retention_secs as i64);
+        self.jobs.retain(|_, job| match job.status {
+            JobStatus::Completed | JobStatus::Failed => {
+                // Keep if completed recently; retain if timestamp is missing.
+                job.completed_at.is_none_or(|t| t > cutoff)
+            }
+            _ => true,
+        });
         before - self.jobs.len()
     }
 
@@ -191,9 +215,10 @@ impl JobQueue {
         self.jobs.is_empty()
     }
 
-    /// Returns true if the queue is at capacity
+    /// Returns true if the active-job limit has been reached.
+    /// Completed and failed jobs do not count toward the limit.
     pub fn is_full(&self) -> bool {
-        self.jobs.len() >= self.max_jobs
+        self.active_job_count() >= self.max_jobs
     }
 
     /// Clear all jobs from the queue (used during snapshot rebuild)

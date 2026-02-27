@@ -293,10 +293,13 @@ fn test_cleanup_finished_jobs() {
     let mut job3 = Job::new("echo 3".to_string());
     let mut job4 = Job::new("echo 4".to_string());
 
+    let old_ts = Utc::now() - chrono::Duration::hours(2);
     job1.status = JobStatus::Pending;
     job2.status = JobStatus::Running;
     job3.status = JobStatus::Completed;
+    job3.completed_at = Some(old_ts);
     job4.status = JobStatus::Failed;
+    job4.completed_at = Some(old_ts);
 
     queue.add_job(job1);
     queue.add_job(job2);
@@ -305,8 +308,8 @@ fn test_cleanup_finished_jobs() {
 
     assert_eq!(queue.len(), 4);
 
-    // Cleanup should remove completed and failed jobs
-    let removed = queue.cleanup_finished_jobs();
+    // Cleanup with 1-hour retention evicts jobs completed 2 hours ago
+    let removed = queue.cleanup_finished_jobs(3600);
     assert_eq!(removed, 2);
     assert_eq!(queue.len(), 2);
 
@@ -731,7 +734,7 @@ fn test_jobs_for_nonexistent_worker_returns_empty() {
 fn test_cleanup_finished_jobs_edge_cases() {
     // Empty queue
     let mut queue = JobQueue::new();
-    assert_eq!(queue.cleanup_finished_jobs(), 0);
+    assert_eq!(queue.cleanup_finished_jobs(3600), 0);
 
     // Queue with only pending/running jobs — nothing to clean
     let mut job1 = Job::new("echo 1".to_string());
@@ -741,7 +744,7 @@ fn test_cleanup_finished_jobs_edge_cases() {
     queue.add_job(job1);
     queue.add_job(job2);
 
-    assert_eq!(queue.cleanup_finished_jobs(), 0);
+    assert_eq!(queue.cleanup_finished_jobs(3600), 0);
     assert_eq!(queue.len(), 2);
 }
 

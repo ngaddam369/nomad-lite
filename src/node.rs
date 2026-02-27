@@ -19,8 +19,12 @@ use crate::worker::JobExecutor;
 /// Minimum log length before compaction is triggered
 const LOG_COMPACTION_THRESHOLD: usize = 1000;
 
-/// How often to evict completed/failed jobs from the in-memory queue
+/// How often to scan for completed/failed jobs to evict
 const QUEUE_CLEANUP_INTERVAL_SECS: u64 = 300;
+
+/// How long to retain completed/failed job records before evicting them.
+/// This gives operators a window to query job details after completion.
+const JOB_HISTORY_RETENTION_SECS: u64 = 3600; // 1 hour
 
 /// Main node that orchestrates all components
 pub struct Node {
@@ -253,7 +257,7 @@ impl Node {
                 }
 
                 _ = cleanup_interval.tick() => {
-                    let removed = job_queue.write().await.cleanup_finished_jobs();
+                    let removed = job_queue.write().await.cleanup_finished_jobs(JOB_HISTORY_RETENTION_SECS);
                     if removed > 0 {
                         tracing::info!(removed, "Evicted finished jobs from queue");
                     }
