@@ -70,6 +70,33 @@ curl http://localhost:8081/api/jobs
 # ]
 ```
 
+**Liveness probe:**
+
+```bash
+curl http://localhost:8081/health/live
+# Response (always 200 while the process is alive):
+# {
+#   "status": "ok"
+# }
+```
+
+**Readiness probe:**
+
+```bash
+curl http://localhost:8081/health/ready
+# Response when a leader has been elected (200):
+# {
+#   "status": "ok",
+#   "leader_id": 1
+# }
+
+# Response during startup or mid-election (503):
+# {
+#   "status": "no_leader",
+#   "leader_id": null
+# }
+```
+
 ## gRPC API
 
 ### SchedulerService (client-facing)

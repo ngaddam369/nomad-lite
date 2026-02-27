@@ -27,10 +27,11 @@ services:
     networks:
       - nomad-net
     healthcheck:
-      test: ["CMD", "true"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health/live"]
       interval: 10s
       timeout: 5s
       retries: 3
+      start_period: 5s
 
   node2:
     build: .
@@ -52,6 +53,12 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - nomad-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
     depends_on:
       - node1
 
@@ -75,6 +82,12 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - nomad-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
     depends_on:
       - node1
       - node2

@@ -27,7 +27,7 @@ FROM docker:27-cli AS docker-cli
 
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y ca-certificates openssl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ca-certificates curl openssl && rm -rf /var/lib/apt/lists/*
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 
 WORKDIR /app

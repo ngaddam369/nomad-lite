@@ -13,8 +13,8 @@ use tower::ServiceExt;
 
 use nomad_lite::config::NodeConfig;
 use nomad_lite::dashboard::{
-    cancel_job_handler, cluster_status_handler, index_handler, list_jobs_handler,
-    submit_job_handler, DashboardState,
+    cancel_job_handler, cluster_status_handler, index_handler, list_jobs_handler, live_handler,
+    ready_handler, submit_job_handler, DashboardState,
 };
 use nomad_lite::raft::node::RaftMessage;
 use nomad_lite::raft::state::RaftRole;
@@ -29,6 +29,8 @@ fn create_test_app(state: DashboardState) -> Router {
         .route("/api/jobs", get(list_jobs_handler))
         .route("/api/jobs", post(submit_job_handler))
         .route("/api/jobs/:id", delete(cancel_job_handler))
+        .route("/health/live", get(live_handler))
+        .route("/health/ready", get(ready_handler))
         .with_state(state)
 }
 
@@ -602,4 +604,103 @@ async fn test_cancel_job_raft_commit_error() {
         .as_str()
         .unwrap()
         .contains("simulated Raft error"));
+}
+
+// ── health check tests ────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_live_returns_200() {
+    let (state, _rx) = create_test_state();
+    let app = create_test_app(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/health/live")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_live_returns_status_ok() {
+    let (state, _rx) = create_test_state();
+    let app = create_test_app(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/health/live")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["status"], "ok");
+}
+
+#[tokio::test]
+async fn test_ready_returns_503_when_no_leader() {
+    let (state, _rx) = create_test_state();
+    // A fresh node has no leader (leader_id = None)
+    let app = create_test_app(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/health/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["status"], "no_leader");
+    assert!(json["leader_id"].is_null());
+}
+
+#[tokio::test]
+async fn test_ready_returns_200_when_leader_known() {
+    let config = NodeConfig::default();
+    let (raft_node, _raft_rx) = RaftNode::new(config, None);
+
+    // Force node into leader state so get_leader_id() returns Some(1)
+    {
+        let mut raft_state = raft_node.state.write().await;
+        raft_state.role = RaftRole::Leader;
+        raft_state.leader_id = Some(1);
+    }
+
+    let state = DashboardState {
+        raft_node: Arc::new(raft_node),
+        job_queue: Arc::new(RwLock::new(JobQueue::new())),
+        draining: Arc::new(AtomicBool::new(false)),
+    };
+    let app = create_test_app(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/health/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["status"], "ok");
+    assert_eq!(json["leader_id"], 1);
 }

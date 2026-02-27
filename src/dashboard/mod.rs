@@ -67,6 +67,42 @@ struct CancelJobResponse {
     error: Option<String>,
 }
 
+#[derive(Serialize)]
+struct LiveResponse {
+    status: &'static str,
+}
+
+#[derive(Serialize)]
+struct ReadyResponse {
+    status: &'static str,
+    leader_id: Option<u64>,
+}
+
+pub async fn live_handler() -> impl IntoResponse {
+    Json(LiveResponse { status: "ok" })
+}
+
+pub async fn ready_handler(State(state): State<DashboardState>) -> impl IntoResponse {
+    let leader_id = state.raft_node.get_leader_id().await;
+    if leader_id.is_some() {
+        (
+            StatusCode::OK,
+            Json(ReadyResponse {
+                status: "ok",
+                leader_id,
+            }),
+        )
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ReadyResponse {
+                status: "no_leader",
+                leader_id: None,
+            }),
+        )
+    }
+}
+
 pub async fn run_dashboard(
     addr: SocketAddr,
     state: DashboardState,
@@ -83,6 +119,8 @@ pub async fn run_dashboard(
         .route("/api/jobs", get(list_jobs_handler))
         .route("/api/jobs", post(submit_job_handler))
         .route("/api/jobs/:id", delete(cancel_job_handler))
+        .route("/health/live", get(live_handler))
+        .route("/health/ready", get(ready_handler))
         .layer(cors)
         .with_state(state);
 
