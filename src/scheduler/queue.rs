@@ -60,7 +60,8 @@ impl JobQueue {
         self.jobs.get_mut(id)
     }
 
-    /// Update job status (legacy method for backwards compatibility)
+    /// Update job status, optionally setting output and error strings.
+    /// Used primarily in tests; production code uses `update_job_result` or `update_status_metadata`.
     pub fn update_status(
         &mut self,
         id: &Uuid,

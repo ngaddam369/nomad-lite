@@ -142,7 +142,7 @@ async fn test_partition_healing_logs_converge() {
         cluster
             .submit_job_to_node(leader_id, &format!("echo partition_{}", i))
             .await
-            .expect(&format!("Job {} should be submitted", i));
+            .unwrap_or_else(|_| panic!("Job {} should be submitted", i));
     }
 
     // Wait for jobs to commit on majority nodes
@@ -194,7 +194,7 @@ async fn test_jobs_replicate_after_partition_healing() {
         cluster
             .submit_job_to_node(leader_id, &format!("echo replicate_{}", i))
             .await
-            .expect(&format!("Job {} should be submitted", i));
+            .unwrap_or_else(|_| panic!("Job {} should be submitted", i));
     }
 
     // Wait for majority to commit
@@ -316,7 +316,7 @@ async fn test_isolated_node_rejoins_cluster() {
         cluster
             .submit_job(&format!("echo during_isolation_{}", i))
             .await
-            .expect(&format!("Job {} should be submitted", i));
+            .unwrap_or_else(|_| panic!("Job {} should be submitted", i));
     }
 
     // Wait for remaining nodes to commit

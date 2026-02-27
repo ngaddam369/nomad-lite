@@ -936,3 +936,57 @@ fn test_least_loaded_worker_gets_next_job() {
     let (_, w3) = assigner.assign_next_job(&mut queue).unwrap();
     assert_eq!(w3, light, "Third job should go to the less-loaded worker");
 }
+
+#[test]
+fn test_running_jobs_on_worker_counts_only_running() {
+    let mut queue = JobQueue::new();
+
+    let j1 = Job::new("echo a".to_string());
+    let j2 = Job::new("echo b".to_string());
+    let j3 = Job::new("echo c".to_string());
+    let (id1, id2, id3) = (j1.id, j2.id, j3.id);
+
+    queue.add_job(j1);
+    queue.add_job(j2);
+    queue.add_job(j3);
+
+    // Assign all three to worker 1
+    queue.assign_job(&id1, 1);
+    queue.assign_job(&id2, 1);
+    queue.assign_job(&id3, 1);
+
+    // All three are Running now
+    assert_eq!(queue.running_jobs_on_worker(1), 3);
+    assert_eq!(queue.running_jobs_on_worker(2), 0, "Worker 2 has no jobs");
+
+    // Complete one — should no longer count
+    queue.update_status(&id1, JobStatus::Completed, None, None);
+    assert_eq!(queue.running_jobs_on_worker(1), 2);
+
+    // Fail another
+    queue.update_status(&id2, JobStatus::Failed, None, None);
+    assert_eq!(queue.running_jobs_on_worker(1), 1);
+
+    // Cancel the last
+    queue.cancel_job(&id3);
+    assert_eq!(queue.running_jobs_on_worker(1), 0);
+}
+
+#[test]
+fn test_running_jobs_on_worker_excludes_other_workers() {
+    let mut queue = JobQueue::new();
+
+    let ja = Job::new("cmd a".to_string());
+    let jb = Job::new("cmd b".to_string());
+    let (id_a, id_b) = (ja.id, jb.id);
+
+    queue.add_job(ja);
+    queue.add_job(jb);
+
+    queue.assign_job(&id_a, 1);
+    queue.assign_job(&id_b, 2);
+
+    assert_eq!(queue.running_jobs_on_worker(1), 1);
+    assert_eq!(queue.running_jobs_on_worker(2), 1);
+    assert_eq!(queue.running_jobs_on_worker(3), 0);
+}

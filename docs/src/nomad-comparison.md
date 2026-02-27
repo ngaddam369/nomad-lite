@@ -68,7 +68,7 @@ a node running one heavy job looks the same as one running one trivial job.
 | Feature | Nomad | nomad-lite |
 |---|---|---|
 | **Job submission** | HCL job spec file | Single string command (gRPC / CLI) |
-| **Job timeouts** | `kill_timeout`, `max_kill_timeout` per task | Not implemented |
+| **Job timeouts** | `kill_timeout`, `max_kill_timeout` per task | Node-level 30 s wall-clock timeout (kills container + marks Failed); per-job configurable timeout not implemented |
 | **Retry policy** | `restart` stanza: attempts, delay, mode | Not implemented |
 | **Reschedule on node loss** | `reschedule` stanza with backoff | Not implemented |
 | **Job cancellation** | `nomad job stop` | ✅ `nomad-lite job cancel <job-id>` |

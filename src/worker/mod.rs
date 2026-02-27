@@ -1,27 +1,20 @@
 //! Worker execution engine for running jobs.
 //!
-//! This module handles the actual execution of shell commands on worker nodes:
-//! - **Job execution**: Spawns shell processes and captures output
-//! - **Heartbeat**: Keeps worker registered as alive with the scheduler
+//! This module handles job execution on worker nodes:
+//! - **Job execution**: Runs commands in sandboxed Docker containers and captures output
+//! - **Heartbeat**: Worker liveness signals are sent every 2 s from the worker loop in `node.rs`
 //!
 //! # Components
 //!
-//! - [`JobExecutor`]: Executes shell commands and returns results
-//! - [`heartbeat`]: Worker heartbeat management (registration, keep-alive)
+//! - [`JobExecutor`]: Executes commands in isolated Docker containers and returns results
 //!
 //! # Execution Flow
 //!
-//! 1. Worker loop polls for assigned jobs
-//! 2. [`JobExecutor::execute`] spawns `sh -c <command>`
-//! 3. Captures stdout/stderr and exit status
-//! 4. Returns [`JobResult`](executor::JobResult) with output and status
-//!
-//! # Security Note
-//!
-//! Commands are executed directly via shell without sandboxing.
-//! See TODO list for planned security improvements.
+//! 1. Worker loop polls for assigned jobs via the local job queue
+//! 2. [`JobExecutor::execute`] spawns `docker run alpine:latest sh -c <command>`
+//! 3. Captures stdout/stderr and exit status within the configured timeout
+//! 4. Returns [`ExecutionResult`](executor::ExecutionResult) with output and status
 
 pub mod executor;
-pub mod heartbeat;
 
 pub use executor::JobExecutor;

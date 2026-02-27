@@ -120,7 +120,7 @@ async fn test_log_replication_to_followers() {
         cluster
             .submit_job(&format!("echo job_{}", i))
             .await
-            .expect(&format!("Job {} submission should succeed", i));
+            .unwrap_or_else(|_| panic!("Job {} submission should succeed", i));
     }
 
     // Wait for replication to all nodes
@@ -349,7 +349,7 @@ async fn test_large_batch_submission() {
         cluster
             .submit_job(&format!("echo batch_{}", i))
             .await
-            .expect(&format!("Job {} should be submitted", i));
+            .unwrap_or_else(|_| panic!("Job {} should be submitted", i));
     }
 
     // Wait for all to be committed on all nodes
@@ -394,7 +394,7 @@ async fn test_view_raft_log_entries() {
         cluster
             .submit_job(&format!("echo log_test_{}", i))
             .await
-            .expect(&format!("Job {} submission should succeed", i));
+            .unwrap_or_else(|_| panic!("Job {} submission should succeed", i));
     }
 
     // Wait for replication

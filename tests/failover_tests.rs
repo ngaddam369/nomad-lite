@@ -113,7 +113,7 @@ async fn test_log_persistence_across_leader_changes() {
         cluster
             .submit_job(&format!("echo persist_{}", i))
             .await
-            .expect(&format!("Job {} should be submitted", i));
+            .unwrap_or_else(|_| panic!("Job {} should be submitted", i));
     }
 
     // Wait for replication to all nodes
@@ -165,7 +165,7 @@ async fn test_multiple_sequential_leader_failures() {
         let leader_id = cluster
             .wait_for_leader(Duration::from_secs(5))
             .await
-            .expect(&format!("Leader {} should be elected", i + 1));
+            .unwrap_or_else(|| panic!("Leader {} should be elected", i + 1));
 
         previous_leaders.push(leader_id);
         cluster.shutdown_node(leader_id);
@@ -367,7 +367,7 @@ async fn test_quorum_loss_prevents_commits() {
         // Verify the job is still in the queue
         let queue = remaining_node.job_queue.read().await;
         assert!(
-            queue.len() >= 1,
+            !queue.is_empty(),
             "Queue should have at least 1 job from before quorum loss, got {}",
             queue.len()
         );

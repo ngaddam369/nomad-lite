@@ -168,4 +168,5 @@ curl http://localhost:8081/health/ready
 |--------|-------------|
 | `AppendEntries` | Log replication and heartbeats |
 | `RequestVote` | Leader election voting |
+| `TimeoutNow` | Trigger immediate election on the target node (used by `TransferLeadership`) |
 | `InstallSnapshot` | Transfer compacted state to slow followers |
