@@ -37,6 +37,7 @@
         .status-running { color: #58a6ff; }
         .status-completed { color: #3fb950; }
         .status-failed { color: #f85149; }
+        .status-cancelled { color: #8b949e; }
         .submit-form { display: flex; gap: 10px; margin-bottom: 20px; }
         input[type="text"] {
             flex: 1;
@@ -61,6 +62,17 @@
         button:disabled { background: #21262d; cursor: not-allowed; }
         .refresh-btn { background: #30363d; }
         .refresh-btn:hover { background: #3d444d; }
+        .btn-cancel {
+            padding: 4px 10px;
+            background: #6e1b1b;
+            border: none;
+            border-radius: 4px;
+            color: #f85149;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .btn-cancel:hover { background: #8b2020; }
         .output { font-family: monospace; font-size: 12px; color: #8b949e; max-width: 300px; overflow: hidden; text-overflow: ellipsis; }
         .timestamp { font-size: 12px; color: #8b949e; white-space: nowrap; }
         .error { color: #f85149; }
@@ -152,6 +164,7 @@
                                 <th>Created</th>
                                 <th>Completed</th>
                                 <th>Output</th>
+                                <th>Actions</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -164,6 +177,11 @@
                                     <td class="timestamp">${formatTimestamp(job.created_at)}</td>
                                     <td class="timestamp">${job.completed_at ? formatTimestamp(job.completed_at) : '-'}</td>
                                     <td class="output ${job.error ? 'error' : ''}">${escapeHtml(job.error || job.output || '-')}</td>
+                                    <td>
+                                      ${(job.status === 'pending' || job.status === 'running')
+                                        ? `<button class="btn-cancel" onclick="cancelJob('${job.id}')">Cancel</button>`
+                                        : ''}
+                                    </td>
                                 </tr>
                             `).join('')}
                         </tbody>
@@ -203,6 +221,21 @@
 
             btn.disabled = false;
             btn.textContent = 'Submit';
+        }
+
+        async function cancelJob(id) {
+            if (!confirm('Cancel job ' + id.substring(0, 8) + '?')) return;
+            try {
+                const res = await fetch('/api/jobs/' + id, { method: 'DELETE' });
+                const data = await res.json();
+                if (data.success) {
+                    fetchJobs();
+                } else {
+                    alert('Cancel failed: ' + (data.error || 'unknown error'));
+                }
+            } catch (e) {
+                alert('Cancel failed: network error');
+            }
         }
 
         function escapeHtml(text) {
