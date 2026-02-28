@@ -334,9 +334,11 @@ mod integration {
             })
             .collect();
 
+        let listen_addr = format!("127.0.0.1:{}", port).parse().unwrap();
         NodeConfig {
             node_id,
-            listen_addr: format!("127.0.0.1:{}", port).parse().unwrap(),
+            listen_addr,
+            advertise_addr: listen_addr,
             peers: peer_configs,
             election_timeout_min_ms: 150,
             election_timeout_max_ms: 300,

@@ -478,7 +478,7 @@ impl SchedulerService for ClientService {
         // Add current node (leader is always alive)
         nodes.push(NodeInfo {
             node_id: self.config.node_id,
-            address: self.config.listen_addr.to_string(),
+            address: self.config.advertise_addr.to_string(),
             is_alive: true,
         });
 

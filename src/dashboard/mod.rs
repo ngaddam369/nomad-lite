@@ -277,7 +277,7 @@ pub async fn cluster_status_handler(State(state): State<DashboardState>) -> impl
         let mut nodes = Vec::with_capacity(state.raft_node.peer_configs().len() + 1);
         nodes.push(NodeInfoResponse {
             node_id: state.raft_node.id,
-            address: state.raft_node.listen_addr().to_string(),
+            address: state.raft_node.advertise_addr().to_string(),
             is_alive: true,
         });
         for peer in state.raft_node.peer_configs() {
@@ -296,7 +296,7 @@ pub async fn cluster_status_handler(State(state): State<DashboardState>) -> impl
         get_nodes_from_leader(&state).await.unwrap_or_else(|| {
             let mut nodes = vec![NodeInfoResponse {
                 node_id: state.raft_node.id,
-                address: state.raft_node.listen_addr().to_string(),
+                address: state.raft_node.advertise_addr().to_string(),
                 is_alive: true,
             }];
             for peer in state.raft_node.peer_configs() {

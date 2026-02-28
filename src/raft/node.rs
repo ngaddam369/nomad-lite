@@ -165,6 +165,11 @@ impl RaftNode {
         self.config.listen_addr
     }
 
+    /// Get the advertise address for this node (reported in cluster status)
+    pub fn advertise_addr(&self) -> std::net::SocketAddr {
+        self.config.advertise_addr
+    }
+
     /// Subscribe to commit index updates. Returns a receiver that gets notified
     /// when new entries are committed.
     pub fn subscribe_commits(&self) -> watch::Receiver<u64> {

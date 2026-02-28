@@ -33,6 +33,7 @@ nomad-lite
 | `--key` | - | Node private key path |
 | `--allow-insecure` | false | Run without TLS if certs fail |
 | `--data-dir` | - | Path to RocksDB data directory for persistence (optional; omit for in-memory) |
+| `--advertise-addr` | `127.0.0.1:<port>` | Address reported to peers and shown in cluster status; defaults to the listen port on loopback; override when nodes must be reachable at a specific hostname or external IP (e.g., `192.168.1.10:50051`) |
 
 ## Client Options
 

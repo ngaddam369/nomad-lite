@@ -40,9 +40,11 @@ pub fn test_node_config(node_id: u64, port: u16, peers: Vec<(u64, u16)>) -> Node
         })
         .collect();
 
+    let listen_addr = format!("127.0.0.1:{}", port).parse().unwrap();
     NodeConfig {
         node_id,
-        listen_addr: format!("127.0.0.1:{}", port).parse().unwrap(),
+        listen_addr,
+        advertise_addr: listen_addr,
         peers: peer_configs,
         // Shorter timeouts for faster tests
         election_timeout_min_ms: 50,

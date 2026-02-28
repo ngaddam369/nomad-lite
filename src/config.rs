@@ -74,6 +74,11 @@ impl TlsConfig {
 pub struct NodeConfig {
     pub node_id: u64,
     pub listen_addr: SocketAddr,
+    /// The address this node advertises to peers and reports in cluster status.
+    /// Defaults to `listen_addr` with `0.0.0.0` replaced by `127.0.0.1`.
+    /// Override with `--advertise-addr` when nodes must be reachable at a
+    /// specific hostname or external IP.
+    pub advertise_addr: SocketAddr,
     pub peers: Vec<PeerConfig>,
     pub election_timeout_min_ms: u64,
     pub election_timeout_max_ms: u64,
@@ -92,12 +97,14 @@ pub struct PeerConfig {
 
 impl Default for NodeConfig {
     fn default() -> Self {
+        // SAFETY: These are hardcoded valid addresses that will always parse
+        let listen_addr: SocketAddr = "127.0.0.1:50051"
+            .parse()
+            .expect("default listen address is valid");
         Self {
             node_id: 1,
-            // SAFETY: This is a hardcoded valid address that will always parse
-            listen_addr: "127.0.0.1:50051"
-                .parse()
-                .expect("default listen address is valid"),
+            listen_addr,
+            advertise_addr: listen_addr,
             peers: Vec::new(),
             election_timeout_min_ms: 150,
             election_timeout_max_ms: 300,
@@ -114,6 +121,7 @@ impl NodeConfig {
         Self {
             node_id,
             listen_addr,
+            advertise_addr: listen_addr,
             ..Default::default()
         }
     }
@@ -199,6 +207,7 @@ mod tests {
         let cfg = NodeConfig::default();
         assert_eq!(cfg.node_id, 1);
         assert_eq!(cfg.listen_addr.to_string(), "127.0.0.1:50051");
+        assert_eq!(cfg.advertise_addr.to_string(), "127.0.0.1:50051");
         assert!(cfg.peers.is_empty());
         assert_eq!(cfg.election_timeout_min_ms, 150);
         assert_eq!(cfg.election_timeout_max_ms, 300);
@@ -211,6 +220,7 @@ mod tests {
         let cfg = NodeConfig::new(42, addr);
         assert_eq!(cfg.node_id, 42);
         assert_eq!(cfg.listen_addr, addr);
+        assert_eq!(cfg.advertise_addr, addr);
         assert!(cfg.peers.is_empty());
     }
 

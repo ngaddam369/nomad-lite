@@ -113,6 +113,13 @@ struct ServerArgs {
     /// Omit for in-memory-only operation (default).
     #[arg(long)]
     data_dir: Option<PathBuf>,
+
+    /// Address to advertise to peers and report in cluster status.
+    /// Defaults to the listen address with 0.0.0.0 replaced by 127.0.0.1.
+    /// Override when nodes must be reachable at a specific hostname or external IP.
+    /// Format: host:port (e.g., "192.168.1.10:50051")
+    #[arg(long)]
+    advertise_addr: Option<String>,
 }
 
 // =============================================================================
@@ -454,17 +461,15 @@ async fn resolve_leader_url(
     if let Some(addr) = leader_addr_from_error(msg) {
         return Some(format!("{}{}", scheme, addr));
     }
-    if let Ok(Some(addr)) = find_leader_addr(client, &client_args.addr).await {
+    if let Ok(Some(addr)) = find_leader_addr(client).await {
         return Some(format!("{}{}", scheme, addr));
     }
     None
 }
 
 /// Find the leader's address by querying cluster status
-/// Returns (leader_address, leader_id) if found
 async fn find_leader_addr(
     client: &mut SchedulerServiceClient<Channel>,
-    original_addr: &str,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
     let response = client
         .get_cluster_status(GetClusterStatusRequest {})
@@ -474,25 +479,7 @@ async fn find_leader_addr(
     let leader_id = response.leader_id;
     for node in response.nodes {
         if node.node_id == leader_id {
-            // Handle 0.0.0.0 addresses - use the original host with leader's port
-            let addr = if node.address.starts_with("0.0.0.0:") {
-                // Extract port from leader's address
-                if let Some(port) = node.address.strip_prefix("0.0.0.0:") {
-                    // Extract host from original address (e.g., "http://127.0.0.1:50051" -> "127.0.0.1")
-                    let original_host = original_addr
-                        .trim_start_matches("http://")
-                        .trim_start_matches("https://")
-                        .split(':')
-                        .next()
-                        .unwrap_or("127.0.0.1");
-                    format!("{}:{}", original_host, port)
-                } else {
-                    return Ok(None);
-                }
-            } else {
-                node.address
-            };
-            return Ok(Some(addr));
+            return Ok(Some(node.address));
         }
     }
     Ok(None)
@@ -566,6 +553,15 @@ async fn run_server(args: ServerArgs) -> Result<(), Box<dyn std::error::Error>> 
     };
     let peers = parse_peers(&args.peers);
 
+    // Compute the advertise address: use --advertise-addr if provided, otherwise
+    // replace the wildcard bind address (0.0.0.0) with loopback (127.0.0.1).
+    let advertise_addr: SocketAddr = match args.advertise_addr {
+        Some(ref s) => s
+            .parse()
+            .map_err(|e| format!("invalid --advertise-addr: {e}"))?,
+        None => format!("127.0.0.1:{}", args.port).parse()?,
+    };
+
     let sandbox = SandboxConfig {
         image: args.image,
         ..SandboxConfig::default()
@@ -574,6 +570,7 @@ async fn run_server(args: ServerArgs) -> Result<(), Box<dyn std::error::Error>> 
     let config = NodeConfig {
         node_id: args.node_id,
         listen_addr,
+        advertise_addr,
         peers,
         election_timeout_min_ms: 150,
         election_timeout_max_ms: 300,
