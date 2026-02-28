@@ -38,7 +38,7 @@ nomad-lite job cancel <job-id>
 
 ## Documentation
 
-**[Read the docs online](https://ngaddam369.github.io/nomad-lite/)** (deployed automatically via GitHub Pages)
+**[Read the Documentation](https://ngaddam369.github.io/nomad-lite/)**
 
 Or serve locally:
 
@@ -48,12 +48,3 @@ mdbook serve docs
 # Open http://localhost:3000
 ```
 
-Topics covered:
-
-- [Getting Started](docs/src/getting-started.md) - Running a cluster with Docker Compose or locally
-- [CLI Reference](docs/src/cli-reference.md) - All commands, options, and examples
-- [API Reference](docs/src/api-reference.md) - gRPC and REST API details
-- [Architecture](docs/src/architecture.md) - Cluster overview, node internals, and data flow diagrams
-- [Security](docs/src/security.md) - mTLS and Docker sandboxing
-- [Raft Consensus](docs/src/raft.md) - Timing, replication, compaction, and safety guarantees
-- [Testing](docs/src/testing.md) - Test suites and how to run them

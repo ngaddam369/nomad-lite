@@ -19,8 +19,8 @@ Nomad ships three built-in schedulers, each with a fundamentally different execu
 | Scheduler | Nomad | nomad-lite |
 |---|---|---|
 | **batch** | Run-to-completion jobs; retries on failure | ✅ Core model |
-| **service** | Long-running daemons; keeps N instances alive, restarts on crash | Not implemented |
-| **system** | Runs exactly one instance on every node (log shippers, exporters) | Not implemented |
+| **service** | Long-running daemons; keeps N instances alive, restarts on crash | Not supported |
+| **system** | Runs exactly one instance on every node (log shippers, exporters) | Not supported |
 
 nomad-lite is a **pure batch scheduler**. Every job is expected to start, do work, and
 exit. Long-running services and system-wide daemons are outside its current scope.
@@ -34,10 +34,10 @@ Nomad abstracts the execution runtime through pluggable task drivers:
 | Driver | Nomad | nomad-lite |
 |---|---|---|
 | `docker` | Full image + entrypoint + env control | Partial — fixed Alpine image, `sh -c` only |
-| `exec` / `raw_exec` | Direct process execution, no container | Not implemented |
-| `java` | JVM workloads with classpath management | Not implemented |
-| `qemu` | Full virtual machine execution | Not implemented |
-| `podman`, `containerd` | OCI-compatible runtimes via plugins | Not implemented |
+| `exec` / `raw_exec` | Direct process execution, no container | Not supported |
+| `java` | JVM workloads with classpath management | Not supported |
+| `qemu` | Full virtual machine execution | Not supported |
+| `podman`, `containerd` | OCI-compatible runtimes via plugins | Not supported |
 
 nomad-lite runs all jobs as `docker run --rm alpine:latest sh -c <command>`. The image is
 configurable at the node level but uniform across all jobs — submitters cannot choose a
@@ -50,12 +50,12 @@ per-job image or entrypoint.
 | Feature | Nomad | nomad-lite |
 |---|---|---|
 | **Placement algorithm** | Bin-packing (CPU + memory aware) | Least-loaded (running job count) |
-| **Resource constraints** | CPU, memory, GPU, disk declared per job | Not implemented |
-| **Node constraints** | Attribute expressions (`kernel.name == linux`) | Not implemented |
-| **Affinities** | Soft preferences for placement | Not implemented |
-| **Spread** | Distribute across failure domains (AZ, rack) | Not implemented |
-| **Job priorities** | Integer 1–100; high priority preempts low | Not implemented |
-| **Preemption** | Evict lower-priority running jobs to place high-priority ones | Not implemented |
+| **Resource constraints** | CPU, memory, GPU, disk declared per job | Not supported |
+| **Node constraints** | Attribute expressions (`kernel.name == linux`) | Not supported |
+| **Affinities** | Soft preferences for placement | Not supported |
+| **Spread** | Distribute across failure domains (AZ, rack) | Not supported |
+| **Job priorities** | Integer 1–100; high priority preempts low | Not supported |
+| **Preemption** | Evict lower-priority running jobs to place high-priority ones | Not supported |
 
 nomad-lite's assigner selects the worker with the fewest running jobs. This is a
 reasonable approximation of load balancing but ignores actual resource consumption —
@@ -68,16 +68,16 @@ a node running one heavy job looks the same as one running one trivial job.
 | Feature | Nomad | nomad-lite |
 |---|---|---|
 | **Job submission** | HCL job spec file | Single string command (gRPC / CLI) |
-| **Job timeouts** | `kill_timeout`, `max_kill_timeout` per task | Node-level 30 s wall-clock timeout (kills container + marks Failed); per-job configurable timeout not implemented |
-| **Retry policy** | `restart` stanza: attempts, delay, mode | Not implemented |
-| **Reschedule on node loss** | `reschedule` stanza with backoff | Not implemented |
+| **Job timeouts** | `kill_timeout`, `max_kill_timeout` per task | Node-level 30 s wall-clock timeout (kills container + marks Failed); per-job configurable timeout not supported |
+| **Retry policy** | `restart` stanza: attempts, delay, mode | Not supported |
+| **Reschedule on node loss** | `reschedule` stanza with backoff | Not supported |
 | **Job cancellation** | `nomad job stop` | ✅ `nomad-lite job cancel <job-id>` |
-| **Job priorities** | 1–100 integer field | Not implemented |
-| **Parameterized jobs** | `parameterized` stanza; dispatch via CLI/API | Not implemented |
-| **Periodic jobs** | Cron expression in job spec | Not implemented |
-| **Job dependencies (DAG)** | Not native; requires external tooling | Not implemented |
-| **Rolling updates** | `update` stanza with canary, max_parallel | Not implemented |
-| **Job versioning** | Tracks job spec history, auto-reverts on failure | Not implemented |
+| **Job priorities** | 1–100 integer field | Not supported |
+| **Parameterized jobs** | `parameterized` stanza; dispatch via CLI/API | Not supported |
+| **Periodic jobs** | Cron expression in job spec | Not supported |
+| **Job dependencies (DAG)** | Not native; requires external tooling | Not supported |
+| **Rolling updates** | `update` stanza with canary, max_parallel | Not supported |
+| **Job versioning** | Tracks job spec history, auto-reverts on failure | Not supported |
 
 ---
 
@@ -105,10 +105,10 @@ any committed state. Without `--data-dir` the node runs in-memory only.
 | Feature | Nomad | nomad-lite |
 |---|---|---|
 | **Transport encryption** | mTLS for all RPC | ✅ mTLS implemented |
-| **ACL system** | Token-based with policies and roles | Not implemented |
-| **Vault integration** | Secrets injection at job start | Not implemented |
-| **Namespaces** | Multi-tenant isolation | Not implemented |
-| **Sentinel policies** | Fine-grained job submission governance | Not implemented |
+| **ACL system** | Token-based with policies and roles | Not supported |
+| **Vault integration** | Secrets injection at job start | Not supported |
+| **Namespaces** | Multi-tenant isolation | Not supported |
+| **Sentinel policies** | Fine-grained job submission governance | Not supported |
 
 nomad-lite implements the transport layer (mTLS) but has no authorization model. Any
 client that presents a valid certificate can submit jobs, drain nodes, or transfer
@@ -121,12 +121,12 @@ not.
 
 | Feature | Nomad | nomad-lite |
 |---|---|---|
-| **Metrics** | Prometheus endpoint (`/v1/metrics`) | Not implemented |
-| **Distributed tracing** | OpenTelemetry support | Not implemented |
+| **Metrics** | Prometheus endpoint (`/v1/metrics`) | Not supported |
+| **Distributed tracing** | OpenTelemetry support | Not supported |
 | **Health endpoints** | `/v1/agent/health` (live + ready) | ✅ `/health/live` + `/health/ready` |
-| **Audit logging** | Immutable audit log (Enterprise) | Not implemented |
+| **Audit logging** | Immutable audit log (Enterprise) | Not supported |
 | **Web UI** | Full job and cluster management UI | ✅ Basic dashboard (status + job list) |
-| **Log streaming** | `nomad alloc logs -f` | Not implemented |
+| **Log streaming** | `nomad alloc logs -f` | Not supported |
 
 ---
 
@@ -138,7 +138,7 @@ not.
 | **Job submission** | HCL / JSON job spec | `string command` field |
 | **Streaming** | Event stream, log tailing | ✅ `StreamJobs` gRPC streaming |
 | **Pagination** | Cursor-based | ✅ Cursor-based `ListJobs` |
-| **Batch submission** | Multiple allocations per job | Not implemented |
+| **Batch submission** | Multiple allocations per job | Not supported |
 | **Leader redirect** | `X-Nomad-Index` + redirect hints | ✅ CLI auto-redirects to leader |
 
 ---
@@ -183,7 +183,7 @@ not.
  Persistence
    ✅  State persistence (RocksDB-backed Raft log + snapshot via --data-dir)
 
- Not yet implemented
+ Not supported / Out of scope
    ⬜  Job timeouts, retries, priorities
    ⬜  Reschedule on node failure
    ⬜  Typed job payloads (HttpCallback, WasmModule, DockerImage)
