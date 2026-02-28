@@ -43,6 +43,7 @@ async fn test_drain_rejects_new_jobs() {
     let submit_result = client
         .submit_job(SubmitJobRequest {
             command: "echo test".to_string(),
+            image: None,
         })
         .await;
 

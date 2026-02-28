@@ -340,6 +340,7 @@ fn test_append_entries_skips_malformed_entries() {
                 job_id: "not-a-valid-uuid".to_string(),
                 command: "echo hello".to_string(),
                 created_at_ms: 1000,
+                image: None,
             })),
         }),
     };

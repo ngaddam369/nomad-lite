@@ -179,6 +179,9 @@ enum JobCommands {
     Submit {
         /// The command to execute (e.g., "echo hello")
         command: String,
+        /// Docker image to use for this job (overrides the server default)
+        #[arg(long)]
+        image: Option<String>,
     },
     /// Get status of a specific job
     Status {
@@ -602,12 +605,14 @@ async fn run_server(args: ServerArgs) -> Result<(), Box<dyn std::error::Error>> 
 async fn handle_job_submit(
     client: &mut SchedulerServiceClient<Channel>,
     cmd: String,
+    image: Option<String>,
     output_format: &OutputFormat,
     client_args: &ClientArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match client
         .submit_job(SubmitJobRequest {
             command: cmd.clone(),
+            image: image.clone(),
         })
         .await
     {
@@ -638,7 +643,10 @@ async fn handle_job_submit(
                     .await?;
                     let mut leader_client = SchedulerServiceClient::new(channel);
                     match leader_client
-                        .submit_job(SubmitJobRequest { command: cmd })
+                        .submit_job(SubmitJobRequest {
+                            command: cmd,
+                            image,
+                        })
                         .await
                     {
                         Ok(response) => {
@@ -1194,8 +1202,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut grpc_client = SchedulerServiceClient::new(channel);
 
             match command {
-                JobCommands::Submit { command: cmd } => {
-                    handle_job_submit(&mut grpc_client, cmd, &client.output, &client).await?;
+                JobCommands::Submit {
+                    command: cmd,
+                    image,
+                } => {
+                    handle_job_submit(&mut grpc_client, cmd, image, &client.output, &client)
+                        .await?;
                 }
                 JobCommands::Status { job_id } => {
                     handle_job_status(&mut grpc_client, job_id, &client.output).await?;

@@ -45,6 +45,12 @@ nomad-lite
 | `--cert` | - | Client certificate for mTLS |
 | `--key` | - | Client private key for mTLS |
 
+## `job submit` Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--image IMAGE` | server default (`alpine:latest`) | Docker image to run this job in; overrides the server-wide `--image` setting for this job only |
+
 ## Command Examples
 
 **Submit a job:**
@@ -53,6 +59,11 @@ nomad-lite
 nomad-lite job submit "echo hello"
 # Job submitted successfully!
 # Job ID: ef319e40-c888-490d-8349-e9c05f78cf5a
+
+# Override the Docker image for this specific job
+nomad-lite job submit --image python:3.12-alpine "python3 -c 'print(42)'"
+# Job submitted successfully!
+# Job ID: 3b7a1c22-...
 ```
 
 **Get job status:**

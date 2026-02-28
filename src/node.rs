@@ -292,10 +292,12 @@ impl Node {
                     let mut should_wake_assigner = false;
                     for entry in &entries {
                         match &entry.command {
-                            Command::SubmitJob { job_id, command, created_at } => {
+                            Command::SubmitJob { job_id, command, created_at, image } => {
                                 let mut queue = job_queue.write().await;
                                 if queue.get_job(job_id).is_none() {
-                                    if queue.add_job(Job::with_id(*job_id, command.clone(), *created_at)) {
+                                    let mut job = Job::with_id(*job_id, command.clone(), *created_at);
+                                    job.image = image.clone();
+                                    if queue.add_job(job) {
                                         tracing::debug!(job_id = %job_id, created_at = %created_at, "Job added from committed entry");
                                     } else {
                                         tracing::warn!(job_id = %job_id, "Job queue at capacity, job dropped");
@@ -510,6 +512,7 @@ impl Node {
             .map(|job| SnapshotJob {
                 id: job.id,
                 command: job.command.clone(),
+                image: job.image.clone(),
                 status: job.status,
                 assigned_worker: job.assigned_worker.unwrap_or(0),
                 executed_by: job.executed_by.unwrap_or(0),
@@ -633,14 +636,14 @@ impl Node {
             // If leader unknown, skip heartbeat tick — worker stays alive for up to 5 s
 
             // Check for jobs assigned to this worker via the queue (not assigner)
-            let jobs_to_run: Vec<(uuid::Uuid, String)> =
+            let jobs_to_run: Vec<(uuid::Uuid, String, Option<String>)> =
                 { job_queue.read().await.jobs_assigned_to(node_id) };
 
             // Execute jobs and collect status updates for batching
             let mut pending_updates: Vec<JobStatusUpdate> = Vec::new();
 
-            for (job_id, command) in jobs_to_run {
-                let result = executor.execute(job_id, &command).await;
+            for (job_id, command, image) in jobs_to_run {
+                let result = executor.execute(job_id, &command, image.as_deref()).await;
 
                 // Skip status update if the job was cancelled while we were executing
                 if job_queue.read().await.get_job(&job_id).map(|j| j.status)

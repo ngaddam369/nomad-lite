@@ -250,12 +250,12 @@ impl JobQueue {
             .collect()
     }
 
-    /// Returns (job_id, command) pairs for all Running jobs assigned to `worker_id`.
-    pub fn jobs_assigned_to(&self, worker_id: u64) -> Vec<(Uuid, String)> {
+    /// Returns (job_id, command, image) tuples for all Running jobs assigned to `worker_id`.
+    pub fn jobs_assigned_to(&self, worker_id: u64) -> Vec<(Uuid, String, Option<String>)> {
         self.jobs
             .values()
             .filter(|j| j.assigned_worker == Some(worker_id) && j.status == JobStatus::Running)
-            .map(|j| (j.id, j.command.clone()))
+            .map(|j| (j.id, j.command.clone(), j.image.clone()))
             .collect()
     }
 

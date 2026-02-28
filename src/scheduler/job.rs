@@ -41,6 +41,7 @@ impl std::fmt::Display for JobStatus {
 pub struct Job {
     pub id: Uuid,
     pub command: String,
+    pub image: Option<String>,
     pub status: JobStatus,
     pub assigned_worker: Option<u64>,
     pub executed_by: Option<u64>,
@@ -56,6 +57,7 @@ impl Job {
         Self {
             id: Uuid::new_v4(),
             command,
+            image: None,
             status: JobStatus::Pending,
             assigned_worker: None,
             executed_by: None,
@@ -71,6 +73,7 @@ impl Job {
         Self {
             id,
             command,
+            image: None,
             status: JobStatus::Pending,
             assigned_worker: None,
             executed_by: None,
@@ -88,6 +91,7 @@ impl Job {
         Self {
             id: snap.id,
             command: snap.command.clone(),
+            image: snap.image.clone(),
             status: snap.status,
             assigned_worker: if snap.assigned_worker == 0 {
                 None

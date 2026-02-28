@@ -46,6 +46,7 @@ fn fill_channel(node: &RaftNode) -> usize {
                 job_id: uuid::Uuid::new_v4(),
                 command: "fill".to_string(),
                 created_at: chrono::Utc::now(),
+                image: None,
             },
             response_tx: tx,
         }) {
@@ -80,6 +81,7 @@ async fn test_resource_exhausted_when_channel_full() {
     let result = service
         .submit_job(Request::new(SubmitJobRequest {
             command: "echo overload".to_string(),
+            image: None,
         }))
         .await;
     let elapsed = start.elapsed();
@@ -115,6 +117,7 @@ async fn test_deadline_exceeded_when_raft_stalled() {
     let result = service
         .submit_job(Request::new(SubmitJobRequest {
             command: "echo stalled".to_string(),
+            image: None,
         }))
         .await;
     let elapsed = start.elapsed();

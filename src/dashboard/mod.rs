@@ -64,6 +64,7 @@ struct JobResponse {
 #[derive(Deserialize)]
 pub struct SubmitJobRequest {
     command: String,
+    image: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -447,13 +448,16 @@ pub async fn submit_job_handler(
         );
     }
 
-    let job = Job::new(payload.command.clone());
+    let image = payload.image.filter(|s| !s.is_empty());
+    let mut job = Job::new(payload.command.clone());
+    job.image = image.clone();
     let job_id = job.id;
 
     let command = Command::SubmitJob {
         job_id,
         command: payload.command,
         created_at: job.created_at,
+        image,
     };
 
     let (tx, rx) = tokio::sync::oneshot::channel();

@@ -36,6 +36,11 @@ curl -X POST http://localhost:8081/api/jobs \
 #   "job_id": "ef319e40-c888-490d-8349-e9c05f78cf5a",
 #   "status": "pending"
 # }
+
+# With a specific Docker image (overrides the server default for this job)
+curl -X POST http://localhost:8081/api/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"command": "python3 -c '\''print(42)'\''", "image": "python:3.12-alpine"}'
 ```
 
 **Cancel a job:**
@@ -108,7 +113,7 @@ curl http://localhost:8081/health/ready
 
 | Method | Description | Leader Only |
 |--------|-------------|-------------|
-| `SubmitJob(command)` | Submit a job | Yes |
+| `SubmitJob(command, image?)` | Submit a job; `image` overrides the server-default Docker image for this job | Yes |
 | `CancelJob(job_id)` | Cancel a pending or running job | Yes |
 | `GetJobStatus(job_id)` | Get job status | No |
 | `ListJobs(page_size, page_token, status_filter, worker_id_filter, command_filter, created_after_ms, created_before_ms)` | List jobs (paginated, filterable) | No |

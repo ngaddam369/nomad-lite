@@ -278,10 +278,13 @@ impl TestCluster {
                         job_id,
                         command,
                         created_at,
+                        image,
                     } => {
                         let mut queue = job_queue.write().await;
                         if queue.get_job(&job_id).is_none() {
-                            queue.add_job(Job::with_id(job_id, command, created_at));
+                            let mut job = Job::with_id(job_id, command, created_at);
+                            job.image = image;
+                            queue.add_job(job);
                         }
                         should_assign = true;
                     }
@@ -408,6 +411,7 @@ impl TestCluster {
             .map(|job| SnapshotJob {
                 id: job.id,
                 command: job.command.clone(),
+                image: job.image.clone(),
                 status: job.status,
                 assigned_worker: job.assigned_worker.unwrap_or(0),
                 executed_by: job.executed_by.unwrap_or(0),
@@ -483,6 +487,7 @@ impl TestCluster {
                     job_id,
                     command: command.to_string(),
                     created_at: Utc::now(),
+                    image: None,
                 },
                 response_tx: tx,
             })
@@ -732,6 +737,7 @@ impl TestCluster {
                     job_id,
                     command: command.to_string(),
                     created_at: Utc::now(),
+                    image: None,
                 },
                 response_tx: tx,
             })

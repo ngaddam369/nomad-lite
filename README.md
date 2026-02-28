@@ -29,6 +29,9 @@ nomad-lite server --node-id 1 --port 50051 --dashboard-port 8080 --data-dir /var
 # Submit a job (in another terminal)
 nomad-lite job submit "echo hello"
 
+# Submit a job using a specific Docker image (overrides the server default)
+nomad-lite job submit --image python:3.12-alpine "python3 -c 'print(42)'"
+
 # Check job status
 nomad-lite job status <job-id>
 

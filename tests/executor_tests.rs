@@ -14,7 +14,7 @@ async fn test_execute_simple_command() {
     let executor = test_executor();
     let job_id = Uuid::new_v4();
 
-    let result = executor.execute(job_id, "echo hello").await;
+    let result = executor.execute(job_id, "echo hello", None).await;
 
     assert_eq!(result.job_id, job_id);
     assert_eq!(result.status, JobStatus::Completed);
@@ -28,7 +28,7 @@ async fn test_execute_empty_output() {
     let job_id = Uuid::new_v4();
 
     // Command that produces no output
-    let result = executor.execute(job_id, "true").await;
+    let result = executor.execute(job_id, "true", None).await;
 
     assert_eq!(result.job_id, job_id);
     assert_eq!(result.status, JobStatus::Completed);
@@ -42,7 +42,7 @@ async fn test_execute_large_output() {
     let job_id = Uuid::new_v4();
 
     // Generate large output (1000 lines)
-    let result = executor.execute(job_id, "seq 1 1000").await;
+    let result = executor.execute(job_id, "seq 1 1000", None).await;
 
     assert_eq!(result.job_id, job_id);
     assert_eq!(result.status, JobStatus::Completed);
@@ -59,7 +59,7 @@ async fn test_execute_command_failure() {
     let job_id = Uuid::new_v4();
 
     // Command that exits with non-zero status
-    let result = executor.execute(job_id, "exit 1").await;
+    let result = executor.execute(job_id, "exit 1", None).await;
 
     assert_eq!(result.job_id, job_id);
     assert_eq!(result.status, JobStatus::Failed);
@@ -73,7 +73,7 @@ async fn test_execute_command_with_stderr() {
 
     // Command that writes to stderr and fails
     let result = executor
-        .execute(job_id, "echo 'error message' >&2 && exit 1")
+        .execute(job_id, "echo 'error message' >&2 && exit 1", None)
         .await;
 
     assert_eq!(result.job_id, job_id);
@@ -88,7 +88,9 @@ async fn test_execute_invalid_command() {
     let job_id = Uuid::new_v4();
 
     // Command that doesn't exist
-    let result = executor.execute(job_id, "nonexistent_command_12345").await;
+    let result = executor
+        .execute(job_id, "nonexistent_command_12345", None)
+        .await;
 
     assert_eq!(result.job_id, job_id);
     assert_eq!(result.status, JobStatus::Failed);
@@ -101,7 +103,7 @@ async fn test_execute_multiline_output() {
     let job_id = Uuid::new_v4();
 
     let result = executor
-        .execute(job_id, "echo -e 'line1\\nline2\\nline3'")
+        .execute(job_id, "echo -e 'line1\\nline2\\nline3'", None)
         .await;
 
     assert_eq!(result.job_id, job_id);
@@ -118,7 +120,7 @@ async fn test_execute_with_special_characters() {
     let job_id = Uuid::new_v4();
 
     // Command with special characters
-    let result = executor.execute(job_id, "echo 'hello $USER'").await;
+    let result = executor.execute(job_id, "echo 'hello $USER'", None).await;
 
     assert_eq!(result.job_id, job_id);
     assert_eq!(result.status, JobStatus::Completed);
@@ -143,7 +145,7 @@ async fn test_job_lifecycle_end_to_end() {
     assert_eq!(queue.get_job(&job_id).unwrap().status, JobStatus::Running);
 
     // 3. Execute the job
-    let result = executor.execute(job_id, "echo lifecycle-test").await;
+    let result = executor.execute(job_id, "echo lifecycle-test", None).await;
 
     // 4. Store the execution result back in the queue
     let completed_at = chrono::Utc::now();
@@ -177,7 +179,9 @@ async fn test_execute_piped_commands() {
     let executor = test_executor();
     let job_id = Uuid::new_v4();
 
-    let result = executor.execute(job_id, "echo 'hello world' | wc -w").await;
+    let result = executor
+        .execute(job_id, "echo 'hello world' | wc -w", None)
+        .await;
 
     assert_eq!(result.job_id, job_id);
     assert_eq!(result.status, JobStatus::Completed);

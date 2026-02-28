@@ -163,11 +163,13 @@ fn test_apply_committed_entries_to_queue() {
             job_id: job_id_1,
             command: "echo first".to_string(),
             created_at: Utc::now(),
+            image: None,
         },
         Command::SubmitJob {
             job_id: job_id_2,
             command: "echo second".to_string(),
             created_at: Utc::now(),
+            image: None,
         },
     ];
 
@@ -177,6 +179,7 @@ fn test_apply_committed_entries_to_queue() {
             job_id,
             command,
             created_at,
+            ..
         } = entry
         {
             if queue.get_job(&job_id).is_none() {
@@ -245,6 +248,7 @@ fn test_idempotent_entry_application() {
         job_id,
         command: "echo test".to_string(),
         created_at: Utc::now(),
+        image: None,
     };
 
     // Apply the same entry twice (simulating potential redelivery)
@@ -253,6 +257,7 @@ fn test_idempotent_entry_application() {
             job_id,
             command,
             created_at,
+            ..
         } = &command
         {
             if queue.get_job(job_id).is_none() {

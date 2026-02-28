@@ -17,6 +17,7 @@ pub struct SnapshotJob {
     pub exit_code: Option<i32>,
     pub created_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
+    pub image: Option<String>,
 }
 
 /// A snapshot of the state machines at a given log index.
@@ -64,6 +65,7 @@ pub enum Command {
         job_id: Uuid,
         command: String,
         created_at: DateTime<Utc>,
+        image: Option<String>,
     },
     /// Update job status (metadata only - output stored locally on executing node)
     UpdateJobStatus {

@@ -168,6 +168,7 @@ fn proto_to_log_entry(proto: &ProtoLogEntry) -> Option<LogEntry> {
                 job_id: Uuid::parse_str(&submit.job_id).ok()?,
                 command: submit.command.clone(),
                 created_at: ms_to_datetime(submit.created_at_ms),
+                image: submit.image.clone().filter(|s| !s.is_empty()),
             },
             Some(crate::proto::command::CommandType::UpdateJobStatus(update)) => {
                 Command::UpdateJobStatus {
@@ -234,11 +235,13 @@ pub fn log_entry_to_proto(entry: &LogEntry) -> ProtoLogEntry {
             job_id,
             command,
             created_at,
+            image,
         } => Some(ProtoCommand {
             command_type: Some(CommandType::SubmitJob(SubmitJobCommand {
                 job_id: job_id.to_string(),
                 command: command.clone(),
                 created_at_ms: created_at.timestamp_millis(),
+                image: image.clone(),
             })),
         }),
         Command::UpdateJobStatus {
@@ -378,6 +381,7 @@ fn proto_to_snapshot_job(proto: &crate::proto::SnapshotJob) -> Option<SnapshotJo
     Some(SnapshotJob {
         id: Uuid::parse_str(&proto.job_id).ok()?,
         command: proto.command.clone(),
+        image: proto.image.clone().filter(|s| !s.is_empty()),
         status: proto_status_to_internal(
             crate::proto::JobStatus::try_from(proto.status)
                 .unwrap_or(crate::proto::JobStatus::Unspecified),
@@ -395,6 +399,7 @@ pub fn snapshot_job_to_proto(job: &SnapshotJob) -> crate::proto::SnapshotJob {
     crate::proto::SnapshotJob {
         job_id: job.id.to_string(),
         command: job.command.clone(),
+        image: job.image.clone(),
         status: internal_status_to_proto(&job.status) as i32,
         assigned_worker: job.assigned_worker,
         executed_by: job.executed_by,
@@ -423,6 +428,7 @@ mod tests {
                 job_id,
                 command: "echo hello".to_string(),
                 created_at: Utc::now(),
+                image: None,
             },
         };
 
@@ -547,6 +553,7 @@ mod tests {
                     job_id: job_id.to_string(),
                     command: "echo test".to_string(),
                     created_at_ms: 1000,
+                    image: None,
                 })),
             }),
         };
@@ -651,6 +658,7 @@ mod tests {
                 job_id,
                 command: "echo roundtrip".to_string(),
                 created_at: Utc::now(),
+                image: None,
             },
         };
 

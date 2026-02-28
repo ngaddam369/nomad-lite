@@ -80,6 +80,7 @@ message SnapshotJob {
     optional int32 exit_code = 6;
     int64 created_at_ms = 7;
     optional int64 completed_at_ms = 8;
+    optional string image = 9;
 }
 
 message InstallSnapshotResponse {
@@ -110,6 +111,7 @@ message SubmitJobCommand {
     string job_id = 1;
     string command = 2;
     int64 created_at_ms = 3;
+    optional string image = 4;
 }
 
 message UpdateJobStatusCommand {
@@ -172,6 +174,7 @@ message CancelJobResponse { bool success = 1; string message = 2; }
 
 message SubmitJobRequest {
     string command = 1;
+    optional string image = 2;
 }
 
 message SubmitJobResponse {

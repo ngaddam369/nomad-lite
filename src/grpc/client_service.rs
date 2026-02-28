@@ -233,7 +233,9 @@ impl SchedulerService for ClientService {
         }
 
         // Create a new job
-        let job = Job::new(req.command.clone());
+        let image = req.image.filter(|s| !s.is_empty());
+        let mut job = Job::new(req.command.clone());
+        job.image = image.clone();
         let job_id = job.id;
 
         // Append to Raft log
@@ -241,6 +243,7 @@ impl SchedulerService for ClientService {
             job_id,
             command: req.command,
             created_at: job.created_at,
+            image,
         };
 
         let (tx, rx) = tokio::sync::oneshot::channel();

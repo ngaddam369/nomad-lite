@@ -253,6 +253,7 @@ async fn test_follower_rejects_writes() {
                 job_id,
                 command: "echo should_fail".to_string(),
                 created_at: Utc::now(),
+                image: None,
             },
             response_tx: tx,
         })
@@ -293,6 +294,7 @@ async fn test_concurrent_job_submissions() {
                         job_id,
                         command,
                         created_at: Utc::now(),
+                        image: None,
                     },
                     response_tx: tx,
                 })

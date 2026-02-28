@@ -35,11 +35,18 @@ impl JobExecutor {
 
     /// Execute a job command in a sandboxed Docker container.
     ///
+    /// `image` overrides the server-default image for this specific job.
     /// If `SandboxConfig::timeout_secs` is set, the container is force-removed
     /// and the job is marked `Failed` with a "Timed out" error when the limit
     /// is exceeded.
-    pub async fn execute(&self, job_id: Uuid, command: &str) -> ExecutionResult {
-        tracing::info!(job_id = %job_id, command, image = %self.config.image, "Executing job");
+    pub async fn execute(
+        &self,
+        job_id: Uuid,
+        command: &str,
+        image: Option<&str>,
+    ) -> ExecutionResult {
+        let image = image.unwrap_or(&self.config.image);
+        tracing::info!(job_id = %job_id, command, image, "Executing job");
 
         // Unique container name lets us force-remove it on timeout.
         let container_name = format!("nomad-{}", job_id.as_simple());
@@ -73,7 +80,7 @@ impl JobExecutor {
         args.push("--read-only".to_string());
 
         // Add image and command
-        args.push(self.config.image.clone());
+        args.push(image.to_string());
         args.push("sh".to_string());
         args.push("-c".to_string());
         args.push(command.to_string());
